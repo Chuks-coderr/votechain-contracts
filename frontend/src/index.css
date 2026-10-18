@@ -177,3 +177,107 @@ tr:nth-child(even) {
     grid-template-columns: 1fr;
   }
 }
+
+/* ============================================================
+   ProposalList — pagination styles
+   ============================================================ */
+
+/* Skeleton shimmer */
+.pl-skeleton {
+  display: block;
+  height: 1rem;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%);
+  background-size: 200% 100%;
+  animation: pl-shimmer 1.4s infinite;
+  min-width: 60px;
+}
+
+@keyframes pl-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Pagination nav */
+.pl-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+}
+
+.pl-page-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.5rem 0.85rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  background: #1e293b;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+.pl-page-btn:hover:not(:disabled) { background: #334155; }
+.pl-page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.pl-page-btn:focus-visible { outline: 3px solid #7dd3fc; outline-offset: 2px; }
+
+.pl-page-numbers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  align-items: center;
+}
+
+.pl-ellipsis {
+  padding: 0 0.3rem;
+  color: #64748b;
+  user-select: none;
+}
+
+.pl-page-num {
+  min-width: 2.2rem;
+  height: 2.2rem;
+  padding: 0 0.4rem;
+  font-size: 0.88rem;
+  font-weight: 500;
+  border-radius: 0.4rem;
+  border: 1px solid #334155;
+  background: #1e293b;
+  color: #e2e8f0;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.pl-page-num:hover:not(:disabled) { background: #334155; }
+.pl-page-num:focus-visible { outline: 3px solid #7dd3fc; outline-offset: 2px; }
+
+/* Active page */
+.pl-page-num-active {
+  background: #0ea5e9 !important;
+  color: #000 !important;
+  border-color: #0ea5e9 !important;
+  font-weight: 700;
+  cursor: default;
+}
+
+/* Page info text */
+.pl-page-info {
+  text-align: center;
+  font-size: 0.85rem;
+  color: #64748b;
+  margin-top: 0.5rem;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .pl-skeleton { animation: none; }
+  .pl-page-btn, .pl-page-num { transition: none; }
+}
