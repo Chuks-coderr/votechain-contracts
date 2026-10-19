@@ -63,7 +63,7 @@ sections = {
 }
 breaking = []
 
-TYPE_RE = re.compile(r'^(?P<type>feat|fix|refactor|chore|perf|build|ci|security|remove|revert)'
+TYPE_RE = re.compile(r'^(?P<type>feat|fix|refactor|chore|perf|build|ci|security|remove|revert|docs|test)'
                       r'(?:\((?P<scope>[^)]*)\))?(?P<bang>!)?:\s*(?P<desc>.+)$')
 
 for rec in records:
@@ -97,7 +97,7 @@ for rec in records:
         sections["Added"].append(entry_text)
     elif t == "fix":
         sections["Fixed"].append(entry_text)
-    elif t in ("refactor", "chore", "perf", "build", "ci"):
+    elif t in ("refactor", "chore", "perf", "build", "ci", "docs", "test"):
         sections["Changed"].append(entry_text)
     elif t in ("remove", "revert"):
         sections["Removed"].append(entry_text)
