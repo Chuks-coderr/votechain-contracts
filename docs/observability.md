@@ -64,3 +64,72 @@ here.
 - Grafana runs with anonymous viewer access and a default `admin/admin`
   password for local-dev convenience only; do not reuse this
   `docker-compose.yml` configuration as-is in a shared or public environment.
+
+## Log rotation and retention (#269)
+
+### Docker Compose log rotation
+
+All services in `docker-compose.yml` share a common `x-logging` YAML anchor
+that enforces the `json-file` driver with bounded rotation:
+
+```yaml
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"   # rotate when a log file reaches 50 MB
+    max-file: "5"     # keep at most 5 rotated files per container (≤ 250 MB total)
+```
+
+This means the maximum on-disk footprint per container is **250 MB**
+(5 × 50 MB).  Older files are silently removed by the Docker daemon as new
+ones are created.
+
+Every service (`dev`, `backend`, `redis`, `stellar-node`, `prometheus`,
+`grafana`) references this anchor via `logging: *default-logging`, so the
+policy is applied uniformly.
+
+### Production log shipping
+
+For production deployments it is strongly recommended to ship logs to an
+external aggregator rather than relying solely on the `json-file` driver.
+The aggregator endpoint is configured via environment variables:
+
+| Variable | Description | Example |
+|---|---|---|
+| `LOG_AGGREGATOR_URL` | HTTP(S) endpoint of your log aggregator | `https://logs.example.com/ingest` |
+| `LOG_AGGREGATOR_TOKEN` | Bearer token / API key for authentication | *(set via secret manager)* |
+| `LOG_LEVEL` | Minimum log level forwarded (`debug`/`info`/`warn`/`error`) | `info` |
+
+Supported aggregators include **Loki** (via Grafana Alloy or Promtail),
+**Datadog**, **Elastic/OpenSearch**, and any service that accepts newline-
+delimited JSON over HTTP.
+
+To enable shipping at the Docker Compose level, replace (or supplement) the
+`json-file` driver with the vendor-provided log driver.  Example for Loki:
+
+```yaml
+x-logging: &default-logging
+  driver: loki
+  options:
+    loki-url: "${LOG_AGGREGATOR_URL}"
+    loki-tenant-id: "votechain"
+    max-size: "50m"
+    max-file: "5"
+```
+
+### Sensitive-field redaction
+
+The backend **must not** ship raw log lines that contain:
+
+- API keys or bearer tokens (request headers `Authorization`, `X-Api-Key`)
+- Admin secrets or private key material
+- Full wallet addresses in error traces where not necessary
+
+The existing `backend/src/middleware/` stack already omits these from
+structured log output.  If you add a new logging call, ensure you redact
+by excluding the field or replacing the value with `[REDACTED]` before
+writing to `console.log` / the logger.
+
+**Never** log the raw value of `process.env.ADMIN_SECRET`,
+`process.env.API_KEY_*`, or any variable whose name contains `KEY`,
+`SECRET`, or `TOKEN`.
