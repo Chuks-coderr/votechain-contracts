@@ -54,6 +54,10 @@ const MAX_BATCH_VOTERS: u32 = 50;
 // attached to a vote via `cast_vote`. See issue #103.
 const MAX_COMMENT_HASH_LEN: u32 = 64;
 
+fn quorum_is_met(total_votes: i128, quorum: i128, votes_yes: i128, votes_no: i128) -> bool {
+    total_votes >= quorum && votes_yes > votes_no
+}
+
 /// Minimum admin transfer window in seconds (5 minutes).
 ///
 /// Stellar ledger timestamps can drift by up to ±12 seconds.  An acceptance
@@ -600,7 +604,7 @@ impl GovernanceContract {
         }
 
         let total = proposal.votes_yes + proposal.votes_no + proposal.votes_abstain;
-        if total >= proposal.quorum && proposal.votes_yes > proposal.votes_no {
+        if quorum_is_met(total, proposal.quorum, proposal.votes_yes, proposal.votes_no) {
             let timelock = get_timelock_duration(&env);
             proposal.execute_after = now + timelock;
             proposal.state = ProposalState::Passed;
