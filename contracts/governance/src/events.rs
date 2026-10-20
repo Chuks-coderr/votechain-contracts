@@ -145,6 +145,10 @@ pub fn contract_unpaused(env: &Env, admin: &Address) {
 /// Data: `(delegator: Address, delegate: Address)`
 pub fn delegation_set(env: &Env, delegator: &Address, delegate: &Address) {
     env.events().publish(
+        (symbol_short!("delegated"),),
+        (delegator.clone(), delegate.clone()),
+    );
+    env.events().publish(
         (symbol_short!("delegset"),),
         (delegator.clone(), delegate.clone()),
     );

@@ -115,6 +115,8 @@ pub enum ContractError {
     AlreadyExtended = 47,
     /// 48 – Optional vote comment hash exceeds the maximum allowed byte length
     CommentHashTooLong = 48,
+    /// 49 – Delegation would create a cycle
+    CircularDelegation = 49,
 }
 
 /// Different types of proposals the governance contract supports.

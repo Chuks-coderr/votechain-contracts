@@ -58,6 +58,10 @@ Source: [`contracts/governance/src/types.rs`](../contracts/governance/src/types.
 | 41 | `CannotRemoveLastToken` | Removing this token would leave the DAO with zero voting tokens. | Multi-token deregistration path | Register a replacement voting token before removing the last one. |
 | 42 | `InvalidWeightMultiplier` | The weight multiplier supplied for a voting token is zero. | Multi-token registration/weight-update path | Supply a weight multiplier greater than zero (100 = 1x). |
 | 43 | `BatchTooLarge` | `get_votes` was called with more than `MAX_BATCH_VOTERS` (50) addresses. | `get_votes` | Split the voter list into batches of 50 or fewer addresses. |
+| 46 | `ExtensionWindowNotReached` | `extend_voting` was called before the proposal entered its final 24 hours. | `extend_voting` | Retry during the final 24 hours before `end_time`. |
+| 47 | `AlreadyExtended` | The proposal's voting period has already been extended once. | `extend_voting` | A proposal can only receive one voting-period extension. |
+| 48 | `CommentHashTooLong` | The optional vote comment hash exceeds the maximum length of 64 bytes. | `cast_vote` | Shorten the comment hash to 64 bytes or fewer. |
+| 49 | `CircularDelegation` | A delegation would create a cycle in the delegate chain. | `delegate` | Choose a delegate whose delegation chain does not lead back to you. |
 
 ### Known documentation/code gap
 
