@@ -1,9 +1,15 @@
 # SEC-013: Staking Lock-Bypass Attack Analysis
 
-**Issue:** [#116 — Add governance token staking for time-weighted voting power](https://github.com/veracindarella/votechain-contracts/issues/116)  
-**Status:** Open — mitigations documented; implementation pending  
-**Reviewed:** 2026-09-29  
-**Scope:** `contracts/token/src/staking.rs`, `contracts/token/src/lib.rs` — `stake`, `unstake`, `transfer`, `transfer_from`
+| Field | Value |
+|---|---|
+| Record type | Security analysis |
+| Date | 2026-09-29 |
+| Status | Open; mitigations documented, implementation pending |
+| Severity | Not recorded |
+| Affected components | `contracts/token/src/staking.rs`, `contracts/token/src/lib.rs` — `stake`, `unstake`, `transfer`, `transfer_from` |
+| Reporter / reviewer | Not recorded |
+
+Related issue: [#116 — Add governance token staking for time-weighted voting power](https://github.com/veracindarella/votechain-contracts/issues/116). Format: [SEC template](SEC-TEMPLATE.md).
 
 ---
 

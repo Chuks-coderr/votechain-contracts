@@ -1,8 +1,15 @@
 # SEC-012: Content Security Policy (CSP)
 
-**Status:** Implemented
-**Priority:** High
-**Affects:** `frontend/`
+| Field | Value |
+|---|---|
+| Record type | Security control |
+| Date | Not recorded |
+| Status | Implemented |
+| Severity | Not assessed; priority is high |
+| Affected components | `frontend/` |
+| Reporter / reviewer | Not recorded |
+
+Format: [SEC template](SEC-TEMPLATE.md).
 
 ---
 
