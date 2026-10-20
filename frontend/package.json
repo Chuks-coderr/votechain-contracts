@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "size": "node scripts/bundle-size.js",
     "test": "vitest run",
+    "test:a11y": "vitest run src/a11y/a11y.test.tsx",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
