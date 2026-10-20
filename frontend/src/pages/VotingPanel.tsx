@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { TransactionToast } from "../components/TransactionToast";
 import { VoteConfirmationDialog, VoteChoice } from "../components/VoteConfirmationDialog";
-import { TransactionToast } from "../components/TransactionToast";
 import { useTransactionStatus } from "../hooks/useTransactionStatus";
 import { useWallet } from "../context/WalletContext";
 import type { RawProposal } from "../types";
