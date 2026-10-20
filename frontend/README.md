@@ -50,6 +50,23 @@ npm run build
 npm run preview
 ```
 
+## Component playground (Storybook)
+
+Browse and interact with shared UI components in isolation:
+
+```bash
+npm run storybook
+```
+
+Opens at http://localhost:6006. Stories live next to each component as `*.stories.tsx`.
+
+To build a static Storybook snapshot (e.g. for CI artefacts):
+
+```bash
+npm run build-storybook
+# output → frontend/storybook-static/
+```
+
 ## Connecting to a live contract
 
 In `src/proposals.ts`, replace the `MOCK_PROPOSALS` array with a real fetch from your
