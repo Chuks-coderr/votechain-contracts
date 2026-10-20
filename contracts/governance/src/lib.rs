@@ -28,6 +28,10 @@ pub mod test_helpers;
 mod test_delegation;
 #[cfg(test)]
 mod test_event_snapshots;
+#[cfg(test)]
+mod test_string_boundaries;
+#[cfg(test)]
+mod test_already_voted_regression;
 
 use soroban_sdk::{contract, contractclient, contractimpl, token, Address, Env, String, Vec};
 use types::{ConfigKey, ContractConfig, ContractError, ContractState, ProposalState, ProposalType, Proposal, Vote, VoteRecord};
