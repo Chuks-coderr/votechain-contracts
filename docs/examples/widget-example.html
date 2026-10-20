@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>VoteChain Widget — Embed Example</title>
+  <title>VoteChain Widget — Local Integration Example</title>
   <style>
     body {
       font-family: system-ui, sans-serif;
@@ -40,12 +40,7 @@
     filter-state="">
   </votechain-proposals>
 
-  <!--
-    Replace the src with a CDN URL once published, e.g.:
-    https://cdn.jsdelivr.net/npm/votechain-widget@0.1.0/dist/votechain-widget.iife.js
-
-    For local testing after `npm run build` in frontend/widget/:
-  -->
+  <!-- Build frontend/widget/ and serve the repository root over HTTP. -->
   <script src="../../frontend/widget/dist/votechain-widget.iife.js"></script>
 
 </body>
