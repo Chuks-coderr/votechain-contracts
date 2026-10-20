@@ -39,6 +39,29 @@ docker compose up backend redis prometheus grafana
 The dashboard includes: request rate by route/status, p50/p95/p99 latency,
 cache hit rate, active DB (Redis) connections, and 5xx error ratio.
 
+### SLO dashboard (#272)
+
+A dedicated SLO dashboard is available at
+[`infra/grafana/votechain-api-slo.json`](../infra/grafana/votechain-api-slo.json),
+auto-provisioned alongside the backend dashboard. It tracks two SLOs:
+
+| SLO | Target | Measurement |
+|-----|--------|-------------|
+| Availability | 99.9% (error budget = 0.1%) | 5xx error rate vs total requests |
+| Latency | P95 < 500ms | 95th percentile request duration |
+
+Panels:
+
+- **Availability %** — current and historical availability with SLO threshold
+- **Error Budget Remaining** — gauge showing how much of the 30-day error
+  budget remains
+- **Error Budget Burn Rate** — multi-window burn rate (5m, 1h, 6h) with 2x
+  and 5x threshold lines
+- **P95 Latency vs SLO** — P95 latency with the 500ms SLO line
+- **Error Rate** — 5xx error rate with the 0.1% error budget line
+- **Request Rate by Status Class** — stacked request rate by HTTP status
+- **Latency Percentiles** — p50/p95/p99 with the 500ms SLO line
+
 ## Alerting
 
 Alert rules live in
@@ -49,6 +72,12 @@ by Prometheus via `rule_files`:
   minutes.
 - **LowCacheHitRate** — fires when the Redis cache hit rate drops below 50%
   for 10 minutes.
+- **SLOErrorBudgetBurnRate2x** — fires when the 5xx error rate exceeds 2x
+  the error budget allowance over both 1h and 5m windows (warning).
+- **SLOErrorBudgetBurnRate5x** — fires when the 5xx error rate exceeds 5x
+  the error budget allowance over both 6h and 30m windows (critical).
+- **SLOLatencyP95Exceeded** — fires when P95 latency exceeds 500ms for 10
+  minutes.
 
 These rules define alert *conditions* only; wiring Alertmanager to a paging
 or chat channel is left to the deploying environment and is not included

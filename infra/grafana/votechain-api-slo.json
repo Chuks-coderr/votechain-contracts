@@ -1,0 +1,380 @@
+{
+  "title": "VoteChain API SLO",
+  "uid": "votechain-api-slo",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "timezone": "browser",
+  "time": { "from": "now-24h", "to": "now" },
+  "refresh": "30s",
+  "tags": ["votechain", "slo", "api"],
+  "description": "SLO dashboard for VoteChain API availability (99.9%) and latency (P95 < 500ms). Tracks error budget, burn rate, and availability percentage.",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Availability % (5m window)",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "1 - (sum(rate(votechain_http_requests_total{status=~\"5..\"}[5m])) / clamp_min(sum(rate(votechain_http_requests_total[5m])), 1))",
+          "legendFormat": "availability"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.99 },
+              { "color": "green", "value": 0.999 }
+            ]
+          },
+          "decimals": 4
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "title": "Error Budget Remaining (%)",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "1 - (sum(rate(votechain_http_requests_total{status=~\"5..\"}[30d])) / (0.001 * clamp_min(sum(rate(votechain_http_requests_total[30d])), 1)))",
+          "legendFormat": "error budget remaining"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.25 },
+              { "color": "green", "value": 0.5 }
+            ]
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "Error Budget Burn Rate (1h vs 5m)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "sum(rate(votechain_http_requests_total{status=~\"5..\"}[5m])) / (0.001 * clamp_min(sum(rate(votechain_http_requests_total[5m])), 1))",
+          "legendFormat": "burn rate (5m)"
+        },
+        {
+          "expr": "sum(rate(votechain_http_requests_total{status=~\"5..\"}[1h])) / (0.001 * clamp_min(sum(rate(votechain_http_requests_total[1h])), 1))",
+          "legendFormat": "burn rate (1h)"
+        },
+        {
+          "expr": "sum(rate(votechain_http_requests_total{status=~\"5..\"}[6h])) / (0.001 * clamp_min(sum(rate(votechain_http_requests_total[6h])), 1))",
+          "legendFormat": "burn rate (6h)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "thresholdsStyle": { "type": "line" },
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 2 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "Availability % Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "1 - (sum(rate(votechain_http_requests_total{status=~\"5..\"}[5m])) / clamp_min(sum(rate(votechain_http_requests_total[5m])), 1))",
+          "legendFormat": "availability (5m)"
+        },
+        {
+          "expr": "1 - (sum(rate(votechain_http_requests_total{status=~\"5..\"}[1h])) / clamp_min(sum(rate(votechain_http_requests_total[1h])), 1))",
+          "legendFormat": "availability (1h)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0.95,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.99 },
+              { "color": "green", "value": 0.999 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "title": "P95 Latency vs SLO (500ms)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(votechain_http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95 latency"
+        },
+        {
+          "expr": "0.5",
+          "legendFormat": "SLO (500ms)",
+          "refId": "slo"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.25 },
+              { "color": "red", "value": 0.5 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "title": "Error Rate (5xx / total requests)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "sum(rate(votechain_http_requests_total{status=~\"5..\"}[5m])) / clamp_min(sum(rate(votechain_http_requests_total[5m])), 1)",
+          "legendFormat": "5xx error rate"
+        },
+        {
+          "expr": "0.001",
+          "legendFormat": "error budget (0.1%)",
+          "refId": "budget"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.001 },
+              { "color": "red", "value": 0.01 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "title": "Error Budget Burn Rate (2x and 5x thresholds)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "sum(rate(votechain_http_requests_total{status=~\"5..\"}[1h])) / (0.001 * clamp_min(sum(rate(votechain_http_requests_total[1h])), 1))",
+          "legendFormat": "burn rate (1h)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 2 },
+              { "color": "orange", "value": 5 },
+              { "color": "red", "value": 10 }
+            ]
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "id": 8,
+      "title": "SLO Target Summary",
+      "type": "table",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "1 - (sum(rate(votechain_http_requests_total{status=~\"5..\"}[5m])) / clamp_min(sum(rate(votechain_http_requests_total[5m])), 1))",
+          "legendFormat": "availability",
+          "refId": "avail"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 0.999 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {}
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Request Rate by Status Class",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "sum(rate(votechain_http_requests_total[5m])) by (status)",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10,
+            "stacking": { "mode": "normal" }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 10,
+      "title": "Latency Percentiles (p50 / p95 / p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(votechain_http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(votechain_http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(votechain_http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99"
+        },
+        {
+          "expr": "0.5",
+          "legendFormat": "SLO (500ms)",
+          "refId": "slo"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 5
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.25 },
+              { "color": "red", "value": 0.5 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "Prometheus" }
+      }
+    ]
+  }
+}
