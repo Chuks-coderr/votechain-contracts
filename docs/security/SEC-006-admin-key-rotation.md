@@ -1,8 +1,15 @@
 # SEC-006: Admin Key Rotation Procedure
 
-**Status:** Implemented  
-**Priority:** High  
-**Affects:** `GovernanceContract` — `propose_admin_transfer`, `accept_admin_transfer`
+| Field | Value |
+|---|---|
+| Record type | Security control / operational procedure |
+| Date | Not recorded |
+| Status | Implemented |
+| Severity | Not assessed; priority is high |
+| Affected components | `GovernanceContract` — `propose_admin_transfer`, `accept_admin_transfer` |
+| Reporter / reviewer | Not recorded |
+
+Format: [SEC template](SEC-TEMPLATE.md).
 
 ---
 

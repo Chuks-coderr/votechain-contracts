@@ -1,10 +1,15 @@
 # SEC-013 — SQL Injection Prevention Audit: Indexer Queries
 
-**Date:** 2026-09-29  
-**Status:** Pass  
-**Severity:** N/A (no vulnerabilities found)  
-**Files audited:** `indexer/src/main.rs`, `api/src/lib.rs`  
-**Auditor:** Internal security review  
+| Field | Value |
+|---|---|
+| Record type | Security audit |
+| Date | 2026-09-29 |
+| Status | Pass; no vulnerabilities found |
+| Severity | Not applicable |
+| Affected components | `indexer/src/main.rs`, `api/src/lib.rs` |
+| Reporter / reviewer | Internal security review |
+
+Format: [SEC template](SEC-TEMPLATE.md).
 
 ---
 

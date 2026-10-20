@@ -1,8 +1,15 @@
 # SEC-008 — Token Balance Fetch Security Audit
 
-**Component:** `contracts/governance/src/lib.rs` → `cast_vote`  
-**Audited:** 2026-04-23  
-**Severity:** Informational (no exploitable vulnerability found; one recommendation raised)
+| Field | Value |
+|---|---|
+| Record type | Security audit |
+| Date | 2026-04-23 |
+| Status | Complete; one medium-priority recommendation remains |
+| Severity | Informational overall; see individual findings |
+| Affected components | `contracts/governance/src/lib.rs` → `cast_vote` |
+| Reporter / reviewer | Not recorded |
+
+Format: [SEC template](SEC-TEMPLATE.md).
 
 ---
 

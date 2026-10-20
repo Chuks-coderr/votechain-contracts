@@ -1,9 +1,15 @@
 # SEC-011 — Flash-Loan Attack Investigation & KI-001 Analysis
 
-**Component:** `contracts/governance/src/lib.rs` → `cast_vote`, `cast_vote_with_delegators`  
-**Audited:** 2026-09-26  
-**Severity:** Medium (residual risk acknowledged)  
-**Status:** Mitigated by Soroban's execution model; token recycling risk remains for future versions  
+| Field | Value |
+|---|---|
+| Record type | Security investigation |
+| Date | 2026-09-26 |
+| Status | Same-transaction risk mitigated by execution model; token recycling risk accepted for now |
+| Severity | Medium residual risk |
+| Affected components | `contracts/governance/src/lib.rs` → `cast_vote`, `cast_vote_with_delegators` |
+| Reporter / reviewer | Not recorded |
+
+Format: [SEC template](SEC-TEMPLATE.md).
 
 ---
 

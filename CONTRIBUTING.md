@@ -16,6 +16,7 @@ Thank you for contributing! VoteChain is an open-source governance protocol buil
 - [Architecture Decision Records](#architecture-decision-records)
 - [Pull Request Process](#pull-request-process)
 - [Code Review Expectations](#code-review-expectations)
+- [Documenting Security Findings](#documenting-security-findings)
 - [Reporting Bugs](#reporting-bugs)
 - [License](#license)
 
@@ -415,6 +416,34 @@ A CI check warns when a PR adds a new function larger than 50 lines to `contract
 - Approve once all blocking concerns are addressed; do not block a merge on optional style preferences.
 
 ---
+
+## Documenting Security Findings
+
+Security vulnerabilities must be reported privately before their technical
+details are added to a public issue, pull request, or document. Follow the
+responsible disclosure process in [SECURITY.md](SECURITY.md); do not publish an
+unfixed vulnerability or proof of concept in this repository.
+
+After maintainers approve public documentation as part of coordinated
+disclosure:
+
+1. Copy [`docs/security/SEC-TEMPLATE.md`](docs/security/SEC-TEMPLATE.md) and
+  replace its placeholders. The template covers findings, audits, analyses,
+  and security controls; mark irrelevant sections as `Not applicable` rather
+  than inventing details.
+2. Use the filename `SEC-NNN-short-title.md` and title `SEC-NNN: Short title`.
+  Coordinate the next identifier with maintainers before publishing. Existing
+  records include historical identifier collisions, so do not infer the next
+  number from filenames alone.
+3. Record the affected components, date, status, severity (or why it is not
+  applicable), analysis, remediation, verification, and references. Distinguish
+  confirmed impact from assumptions and residual risk.
+4. Link the fixing pull request or advisory and add regression-test or audit
+  evidence where applicable. Do not include credentials, private data, or
+  exploit instructions that remain sensitive.
+
+Use the template for new SEC records and keep existing records' shared metadata
+consistent with it when updating them.
 
 ## Reporting Bugs
 
