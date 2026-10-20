@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod chaos_test;
+
 use std::{env, time::Duration};
 
 use anyhow::{Context, Result};
