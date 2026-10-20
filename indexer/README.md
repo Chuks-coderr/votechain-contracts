@@ -60,7 +60,12 @@ Horizon on a timer, persists events, and the REST API only ever reads from
 Postgres. This keeps read latency low and decouples API availability from
 Horizon's uptime. See [`docs/adr/`](../docs/adr/) for the ADRs covering why
 a separate indexer service, PostgreSQL, and the Redis caching layer in
-`backend/` were chosen (ADR-013 through ADR-015).
+`backend/` were chosen:
+
+- [ADR-013](../docs/adr/ADR-013-separate-indexer-service.md) — separate indexer service
+- [ADR-014](../docs/adr/ADR-014-postgresql-storage-backend.md) — PostgreSQL storage backend
+- [ADR-015](../docs/adr/ADR-015-redis-caching-strategy.md) — Redis caching strategy
+- [ADR-016](../docs/adr/ADR-016-indexer-technology-postgresql-rust.md) — consolidated indexer technology choice (PostgreSQL + Rust)
 
 ## Prerequisites
 
