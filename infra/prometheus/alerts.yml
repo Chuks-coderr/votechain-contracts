@@ -43,3 +43,19 @@ groups:
           description: >
             The proposal cache hit rate has been below 50% for 10 minutes.
             Current value: {{ $value | humanizePercentage }}.
+
+      # Alert: indexer lag — fires when a proposal on-chain finalise event takes
+      # more than 5 minutes to appear in the indexer. Indicates the indexer is
+      # falling behind the chain and governance state may be stale. (#264)
+      - alert: IndexerLagHigh
+        expr: indexer_event_lag_seconds > 300
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Indexer event lag exceeds 5 minutes"
+          description: >
+            The indexer has not processed a finalise event for more than
+            {{ $value | humanizeDuration }}. Governance proposal states shown
+            in the UI may be stale. Investigate the indexer process immediately.
+          runbook_url: "https://github.com/veracindarella/votechain-contracts/blob/main/docs/mainnet-runbook.md#indexer-lag"
