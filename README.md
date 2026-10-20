@@ -64,6 +64,64 @@ Decentralized governance is critical for DAOs, protocols, and communities to mak
 
 VoteChain consists of two complementary Soroban smart contracts:
 
+```mermaid
+flowchart LR
+    subgraph Clients
+        Web[Frontend]
+        Widget[Embeddable widget]
+        Alerts[Governance alerts bot]
+        Wallet[Freighter wallet]
+        Discord[Discord webhook]
+    end
+
+    subgraph Services
+        Backend[Backend API]
+        Cache[(Redis cache)]
+        Indexer[Indexer process<br/>ingestion loop + REST API]
+        Database[(PostgreSQL<br/>events + cursor)]
+        Prometheus[Prometheus]
+        Grafana[Grafana]
+    end
+
+    subgraph Stellar
+        Horizon[Stellar Horizon / RPC]
+        Governance[Governance contract]
+        Token[Token contract]
+    end
+
+    Web -->|proposal API reads| Backend
+    Widget -->|proposal API reads| Backend
+    Alerts -->|poll proposals| Backend
+    Alerts -->|notifications| Discord
+    Backend <--> Cache
+
+    Indexer -->|poll contract events| Horizon
+    Horizon -->|events| Indexer
+    Indexer -->|persist events and cursor| Database
+    Indexer -->|invalidate proposal cache| Backend
+    Indexer -.->|event and proposal queries| Database
+
+    Governance -->|contract events| Horizon
+    Prometheus -->|scrape /metrics| Backend
+    Grafana -->|query metrics| Prometheus
+
+    Web -.->|target vote flow| Wallet
+    Wallet -.->|signed transaction| Horizon
+    Horizon -.->|invoke| Governance
+    Governance -.->|read voting balance| Token
+
+    classDef vote fill:#fff2cc,stroke:#b7791f,stroke-width:2px;
+    class Wallet,Governance,Token vote;
+```
+
+The dotted vote path shows the intended on-chain transaction flow. The current
+frontend signs a placeholder XDR with Freighter but does not yet submit it to
+Stellar; the diagram does not imply that voting is end-to-end live. The indexer
+REST API is part of the indexer process and serves queries from PostgreSQL.
+
+The following diagram zooms in on the Soroban contracts and their relationship
+to the Stellar network.
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    VoteChain System                          │
