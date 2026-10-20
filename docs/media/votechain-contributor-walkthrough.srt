@@ -1,0 +1,139 @@
+1
+00:00:00,000 --> 00:00:06,000
+Welcome to VoteChain! In this walkthrough I'm going to show you how to go
+from zero to your first contribution in about ten minutes.
+
+2
+00:00:06,000 --> 00:00:15,000
+We'll clone the repo, install the dependencies, run the full test suite,
+make a small change, and run the tests one more time to confirm nothing broke.
+
+3
+00:00:15,000 --> 00:00:18,000
+Let's get started.
+
+4
+00:00:30,000 --> 00:00:36,000
+First, open a terminal. We'll clone the VoteChain repository from GitHub.
+
+5
+00:00:36,000 --> 00:00:50,000
+Now let me give you a quick tour of the project layout. At the top level you'll see
+a contracts/ directory — that holds the two Soroban smart contracts:
+governance and token.
+
+6
+00:00:50,000 --> 00:01:05,000
+There's a docs/ directory with Architecture Decision Records and guides, a scripts/
+directory for deployment helpers, and a Makefile that wraps the most common commands.
+
+7
+00:01:05,000 --> 00:01:10,000
+Almost everything you'll do during development goes through make.
+
+8
+00:01:30,000 --> 00:01:38,000
+Let's install the tools we need. If you already have Rust installed you can
+skip the first step.
+
+9
+00:01:38,000 --> 00:01:55,000
+Run the rustup installer from rustup.rs, follow the on-screen prompts,
+then restart your terminal and verify with: rustc --version
+
+10
+00:01:55,000 --> 00:02:15,000
+Next, add the WebAssembly target with: rustup target add wasm32-unknown-unknown
+Soroban contracts compile to WebAssembly, so Cargo needs this target to build them.
+
+11
+00:02:15,000 --> 00:02:35,000
+Install the Stellar CLI at the pinned version: cargo install --locked stellar-cli@22.8.2
+We pin the CLI to a specific version to keep everyone's environment consistent.
+
+12
+00:02:35,000 --> 00:02:45,000
+The required version is always documented in the Makefile and README.
+
+13
+00:04:00,000 --> 00:04:08,000
+Now let's run the tests to confirm the environment is set up correctly.
+
+14
+00:04:08,000 --> 00:04:18,000
+Run: make test
+Cargo compiles both contracts and runs all unit tests.
+
+15
+00:04:18,000 --> 00:04:35,000
+On the first run this can take a minute or two because it downloads and compiles
+dependencies. Subsequent runs are much faster thanks to the build cache.
+
+16
+00:04:35,000 --> 00:04:50,000
+When everything passes you'll see: test result: ok. 45 passed; 0 failed; 0 ignored
+Forty-five tests, zero failures — we're good.
+
+17
+00:04:50,000 --> 00:05:05,000
+If you see any failures here on a fresh clone, please open a GitHub issue
+so we can investigate.
+
+18
+00:05:30,000 --> 00:05:42,000
+Now let's make a small, safe change to prove the workflow end-to-end.
+I'll add a documentation comment to one of the public functions in the governance contract.
+
+19
+00:05:42,000 --> 00:06:00,000
+Open contracts/governance/src/lib.rs in your editor and find the proposal_count function.
+We'll add a doc-comment above it.
+
+20
+00:06:00,000 --> 00:06:20,000
+Now let's run the formatter and linter to make sure the change is clean.
+Run: make fmt  then: make lint
+
+21
+00:06:20,000 --> 00:06:40,000
+No warnings, no errors. Let's also generate the docs to see the comment rendered
+with: cargo doc --no-deps --open
+
+22
+00:06:40,000 --> 00:07:00,000
+You can see the new doc-comment appears in the rendered HTML. This is the
+kind of small, incremental improvement that makes a great first contribution.
+
+23
+00:08:00,000 --> 00:08:10,000
+Always run the full test suite after any change, no matter how small.
+Run: make test
+
+24
+00:08:10,000 --> 00:08:25,000
+All forty-five tests still pass. The doc-comment didn't break anything —
+which is exactly what we expected, but it's important to verify.
+
+25
+00:09:00,000 --> 00:09:15,000
+Let's commit the change using the Conventional Commits format.
+
+26
+00:09:15,000 --> 00:09:35,000
+git add contracts/governance/src/lib.rs
+git commit -m "docs(governance): add doc-comment to proposal_count"
+git push origin feature/my-first-change
+
+27
+00:09:35,000 --> 00:09:45,000
+Then go to GitHub, open a pull request against main, fill in the PR template,
+and reference any related issue.
+
+28
+00:09:45,000 --> 00:09:52,000
+A maintainer will review it and merge it once CI passes.
+
+29
+00:09:52,000 --> 00:10:00,000
+That's the full workflow — clone, install, test, change, test again, commit, and PR.
+For more detail see the Getting Started guide and CONTRIBUTING.md. Happy coding!
