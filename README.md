@@ -3,6 +3,7 @@
 [![CI](https://github.com/veracindarella/votechain-contracts/actions/workflows/ci.yml/badge.svg)](https://github.com/veracindarella/votechain-contracts/actions/workflows/ci.yml)
 [![Coverage](https://github.com/veracindarella/votechain-contracts/actions/workflows/ci.yml/badge.svg?job=coverage)](https://github.com/veracindarella/votechain-contracts/actions/workflows/ci.yml)
 [![Staging Deploy](https://github.com/veracindarella/votechain-contracts/actions/workflows/deploy-staging.yml/badge.svg)](https://github.com/veracindarella/votechain-contracts/actions/workflows/deploy-staging.yml)
+[![Protocol Compat](https://github.com/veracindarella/votechain-contracts/actions/workflows/stellar-protocol-compat.yml/badge.svg)](https://github.com/veracindarella/votechain-contracts/actions/workflows/stellar-protocol-compat.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Milestone: v1.0 MVP](https://img.shields.io/github/milestones/progress/veracindarella/votechain-contracts/1)](https://github.com/veracindarella/votechain-contracts/milestone/1)
 [![Milestone: v1.1 Delegation](https://img.shields.io/github/milestones/progress/veracindarella/votechain-contracts/2)](https://github.com/veracindarella/votechain-contracts/milestone/2)
