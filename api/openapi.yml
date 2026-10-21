@@ -18,6 +18,9 @@ info:
 
     ## Authentication
 
+    Third-party integrators: see the [API Integration Guide](../docs/api-integrator-guide.md)
+    for key provisioning, request headers, rate-limit handling, and authentication errors.
+
     The current API does **not** require authentication for read-only endpoints (`GET`).
     The cache-invalidation endpoint (`POST /api/proposals/invalidate`) should be
     protected at the network/infra level (e.g., internal-only ingress or a shared
