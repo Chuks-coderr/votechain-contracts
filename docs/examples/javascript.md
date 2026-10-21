@@ -1,10 +1,144 @@
 # JavaScript Examples — Governance Contract
 
-These examples use `@stellar/stellar-sdk` to interact with a deployed VoteChain governance contract on Stellar Testnet.
+These examples use `@votechain/sdk` (issue #108) to interact with a deployed
+VoteChain governance contract on Stellar Testnet. The SDK wraps the manual
+XDR construction and raw Soroban RPC calls shown in the "Without the SDK"
+section below, so integrators normally never need to write that code
+themselves.
 
 ---
 
 ## Setup
+
+```bash
+npm install @votechain/sdk
+```
+
+```js
+import { VoteChainClient, RawKeySigner, FreighterSigner, Networks } from "@votechain/sdk";
+
+const GOVERNANCE_CONTRACT_ID = "C..."; // from config/testnet.toml
+
+const client = new VoteChainClient({
+  rpcUrl: "https://soroban-testnet.stellar.org",
+  networkPassphrase: Networks.TESTNET,
+  contractId: GOVERNANCE_CONTRACT_ID,
+});
+
+// Signing option 1: raw secret key (server-side scripts, tests only —
+// never expose a secret key in a browser context).
+const signer = new RawKeySigner("S..."); // signer
+
+// Signing option 2: Freighter wallet, for browser apps.
+// import * as freighterApi from "@stellar/freighter-api";
+// const signer = new FreighterSigner(freighterApi);
+```
+
+---
+
+## initialize
+
+```js
+await client.initialize(signer, {
+  admin: await signer.publicKey(),
+  votingToken: "C...<TOKEN_CONTRACT_ID>",
+  minProposalBalance: 0n,
+  proposalCooldown: 0n,
+  minDuration: 3600n,
+  maxDuration: 2_592_000n,
+  restrictAdminVote: false,
+  timelockDuration: 0n,
+  maxActiveProposals: 0n, // 0 = use the contract default of 50
+});
+```
+
+---
+
+## createProposal
+
+```js
+const { hash, value: proposalId } = await client.createProposal(signer, {
+  proposer: await signer.publicKey(),
+  title: "Increase treasury allocation",
+  description: "Allocate 10% more to the dev fund",
+  quorum: 1000n,
+  durationSeconds: 604800n, // 7 days
+});
+
+console.log(`Created proposal ${proposalId} in tx ${hash}`);
+```
+
+---
+
+## castVote
+
+```js
+const voter = await signer.publicKey();
+
+await client.castVote(signer, {
+  voter,
+  proposalId: 1n,
+  vote: "Yes", // "Yes" | "No" | "Abstain"
+});
+
+// Optionally attach an off-chain comment CID (issue #103). The chain does
+// not validate the hash — pin the comment to IPFS first, see
+// docs/comment-pinning.md.
+await client.castVote(signer, {
+  voter,
+  proposalId: 1n,
+  vote: "Yes",
+  commentHash: "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",
+});
+```
+
+---
+
+## finalise
+
+```js
+// Call after the voting period has ended.
+await client.finalise(signer, 1n);
+```
+
+---
+
+## Read-only calls
+
+```js
+const readAs = await signer.publicKey(); // any funded account works for simulated reads
+
+const proposal = await client.getProposal(readAs, 1n);
+console.log(proposal.title, proposal.state, proposal.votesYes);
+
+const proposals = await client.listProposals(readAs, 0n, 50n);
+
+const voted = await client.hasVoted(readAs, 1n, voter);
+
+const record = await client.getVote(readAs, 1n, voter);
+if (record) {
+  console.log(record.voteType, record.weight, record.commentHash);
+}
+```
+
+---
+
+## Notes
+
+- Replace `"C..."` and `"S..."` with values from `config/testnet.toml` and
+  your funded testnet keypair.
+- Fund a testnet account at [https://friendbot.stellar.org](https://friendbot.stellar.org/?addr=<YOUR_ADDRESS>).
+- `i128`/`u64` contract fields (`quorum`, `votesYes`, proposal IDs, …) are
+  returned as `bigint`.
+- See `sdk/README.md` for the full API surface.
+
+---
+
+## Without the SDK (raw `@stellar/stellar-sdk`)
+
+This is the manual pattern `@votechain/sdk` wraps — kept here for anyone
+who needs to construct calls the SDK does not yet cover, or wants to see
+what is happening under the hood.
 
 ```bash
 npm install @stellar/stellar-sdk
@@ -60,65 +194,6 @@ async function invoke(operation) {
 
   return response;
 }
-```
-
----
-
-## initialize
-
-```js
-async function initialize(adminAddress, tokenContractId) {
-  const op = contract.call(
-    "initialize",
-    nativeToScVal(adminAddress, { type: "address" }),
-    nativeToScVal(tokenContractId, { type: "address" })
-  );
-  return invoke(op);
-}
-
-// Usage
-await initialize(keypair.publicKey(), "C...<TOKEN_CONTRACT_ID>");
-```
-
----
-
-## create_proposal
-
-```js
-async function createProposal(proposerKeypair, title, description, quorum, durationSeconds) {
-  const op = contract.call(
-    "create_proposal",
-    nativeToScVal(proposerKeypair.publicKey(), { type: "address" }),
-    nativeToScVal(title, { type: "string" }),
-    nativeToScVal(description, { type: "string" }),
-    nativeToScVal(quorum, { type: "i128" }),
-    nativeToScVal(durationSeconds, { type: "u64" })
-  );
-  return invoke(op);
-}
-
-// Usage — quorum of 1000 tokens, 7-day voting window
-await createProposal(
-  keypair,
-  "Increase treasury allocation",
-  "Allocate 10% more to the dev fund",
-  1000n,
-  604800n
-);
-```
-
----
-
-## cast_vote
-
-```js
-// Vote enum: { Yes: null } | { No: null } | { Abstain: null }
-function voteScVal(env, choice) {
-  const variants = { Yes: 0, No: 1, Abstain: 2 };
-  return xdr.ScVal.scvVec([
-    xdr.ScVal.scvSymbol(choice),
-  ]);
-}
 
 async function castVote(voterKeypair, proposalId, vote) {
   const voteVal = xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(vote)]); // "Yes" | "No" | "Abstain"
@@ -126,113 +201,11 @@ async function castVote(voterKeypair, proposalId, vote) {
     "cast_vote",
     nativeToScVal(voterKeypair.publicKey(), { type: "address" }),
     nativeToScVal(proposalId, { type: "u64" }),
-    voteVal
+    voteVal,
+    xdr.ScVal.scvVoid() // no comment hash
   );
   return invoke(op);
 }
 
-// Usage
 await castVote(keypair, 1n, "Yes");
 ```
-
----
-
-## finalise
-
-```js
-async function finalise(proposalId) {
-  const op = contract.call(
-    "finalise",
-    nativeToScVal(proposalId, { type: "u64" })
-  );
-  return invoke(op);
-}
-
-// Usage — call after the voting period has ended
-await finalise(1n);
-```
-
----
-
-## execute
-
-```js
-async function execute(adminKeypair, proposalId) {
-  const op = contract.call(
-    "execute",
-    nativeToScVal(adminKeypair.publicKey(), { type: "address" }),
-    nativeToScVal(proposalId, { type: "u64" })
-  );
-  return invoke(op);
-}
-
-// Usage — proposal must be in Passed status
-await execute(keypair, 1n);
-```
-
----
-
-## cancel
-
-```js
-async function cancel(adminKeypair, proposalId) {
-  const op = contract.call(
-    "cancel",
-    nativeToScVal(adminKeypair.publicKey(), { type: "address" }),
-    nativeToScVal(proposalId, { type: "u64" })
-  );
-  return invoke(op);
-}
-
-// Usage — proposal must be Active
-await cancel(keypair, 1n);
-```
-
----
-
-## Read-only calls
-
-```js
-/** Returns the full Proposal object for a given ID. */
-async function getProposal(proposalId) {
-  const result = await server.simulateTransaction(
-    new TransactionBuilder(await server.getAccount(keypair.publicKey()), {
-      fee: "100",
-      networkPassphrase: NETWORK_PASSPHRASE,
-    })
-      .addOperation(contract.call("get_proposal", nativeToScVal(proposalId, { type: "u64" })))
-      .setTimeout(30)
-      .build()
-  );
-  return result.result?.retval;
-}
-
-/** Returns true if the voter has already voted on the proposal. */
-async function hasVoted(proposalId, voterAddress) {
-  const result = await server.simulateTransaction(
-    new TransactionBuilder(await server.getAccount(keypair.publicKey()), {
-      fee: "100",
-      networkPassphrase: NETWORK_PASSPHRASE,
-    })
-      .addOperation(
-        contract.call(
-          "has_voted",
-          nativeToScVal(proposalId, { type: "u64" }),
-          nativeToScVal(voterAddress, { type: "address" })
-        )
-      )
-      .setTimeout(30)
-      .build()
-  );
-  return result.result?.retval;
-}
-```
-
----
-
-## Notes
-
-- Replace `"C..."` and `"S..."` with values from `config/testnet.toml` and your funded testnet keypair.
-- Fund a testnet account at [https://friendbot.stellar.org](https://friendbot.stellar.org/?addr=<YOUR_ADDRESS>).
-- The `invoke` helper handles simulation, fee estimation, signing, and polling in one call.
-- Vote enum values must be passed as `ScvVec([ScvSymbol("Yes")])` to match the Soroban contract type.

@@ -1,0 +1,17 @@
+{
+  "name": "votechain-governance-alerts",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Optional Discord bot posting VoteChain governance events",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc index.ts --outDir dist --target es2020 --module commonjs --lib es2020,dom --types node",
+    "start": "node dist/index.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  },
+  "engines": { "node": ">=18" }
+}

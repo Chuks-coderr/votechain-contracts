@@ -1,0 +1,27 @@
+# CODEOWNERS file for VoteChain
+# See https://help.github.com/articles/about-codeowners/
+
+# Smart contracts - require contract maintainer review
+contracts/                          @veracindarella/contract-maintainers
+
+# Security documentation - require security team review
+docs/security/                      @veracindarella/security-team
+
+# Deployment scripts - require DevOps owner review
+scripts/                            @veracindarella/devops-owner
+
+# Frontend - require frontend maintainer review
+frontend/                           @veracindarella/frontend-maintainer
+
+# GitHub workflows and CI - require maintainers
+.github/workflows/                  @veracindarella/maintainers
+
+# Configuration files - require maintainers
+Cargo.toml                          @veracindarella/maintainers
+Cargo.lock                          @veracindarella/maintainers
+package.json                        @veracindarella/maintainers
+backend/package.json                @veracindarella/maintainers
+
+# Root files - require maintainers
+CONTRIBUTING.md                     @veracindarella/maintainers
+SECURITY.md                         @veracindarella/security-team

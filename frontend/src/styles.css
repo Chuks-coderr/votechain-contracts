@@ -521,3 +521,7 @@ main { flex: 1; padding: 2rem 0 4rem; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+.retry-btn {
+  margin-top: 0.75rem;
+}

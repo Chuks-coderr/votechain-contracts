@@ -7,12 +7,16 @@ Thank you for contributing! VoteChain is an open-source governance protocol buil
 ## Table of Contents
 
 - [Getting Started](#getting-started)
+  - [Video Walkthrough](#video-walkthrough)
+- [Issue Triage Process](#issue-triage-process)
 - [Branch Protection Rules](#branch-protection-rules)
 - [Branching Strategy](#branching-strategy)
 - [Commit Messages](#commit-messages)
 - [Development Workflow](#development-workflow)
+- [Architecture Decision Records](#architecture-decision-records)
 - [Pull Request Process](#pull-request-process)
 - [Code Review Expectations](#code-review-expectations)
+- [Documenting Security Findings](#documenting-security-findings)
 - [Reporting Bugs](#reporting-bugs)
 - [License](#license)
 
@@ -35,9 +39,126 @@ For a fully reproducible environment without a local Rust installation, use Dock
 docker compose run --rm dev make test
 ```
 
+### Video Walkthrough
+
+New to VoteChain?  Watch the **[Video Walkthrough for First-Time Contributors](docs/video-walkthrough.md)** — a ~10-minute screen-recording that covers the complete workflow end-to-end:
+
+- Cloning the repository
+- Installing Rust, the WebAssembly target, and the Stellar CLI
+- Running the full test suite with `make test`
+- Making a small change and verifying nothing broke
+- Committing with Conventional Commits and opening a pull request
+
+A full written transcript is included in the doc for accessibility.
+
+> **Video status:** 🎬 Pending recording — the placeholder and transcript are
+> already in place; the video link will be updated once it is recorded and
+> uploaded.
+
 ---
 
-## Branch Protection Rules
+### Setting up pre-commit hooks
+
+VoteChain uses [pre-commit](https://pre-commit.com/) to run secret scanning before every commit. This prevents accidental exposure of private keys, mnemonics, or API tokens.
+
+Install the hooks once after cloning:
+
+```bash
+# Install the pre-commit tool (Python 3.8+ required)
+pip install pre-commit
+
+# Register the hooks with your local clone
+pre-commit install
+```
+
+After installation, every `git commit` automatically runs `detect-secrets` and the private-key check against your staged changes. A failed check aborts the commit and prints which file triggered the alert.
+
+You can also run the hooks manually at any time:
+
+```bash
+# Scan all tracked files
+pre-commit run --all-files
+
+# Scan only staged changes
+pre-commit run
+```
+
+If a finding is a false positive (e.g., a test fixture or a generated hash), add it to `.secrets.baseline` and commit the updated baseline:
+
+```bash
+# Regenerate the baseline with the false positive acknowledged
+detect-secrets scan --baseline .secrets.baseline
+
+# Review the diff, then stage and commit
+git add .secrets.baseline
+git commit -m "chore: update secrets baseline"
+```
+
+> Secrets in CI are also scanned by the `secret-scan` job in `.github/workflows/ci.yml` using [gitleaks](https://github.com/gitleaks/gitleaks-action). Both the local hook and the CI job must pass for a PR to be mergeable.
+
+---
+
+## Issue Triage Process
+
+To maintain clarity and prioritise work effectively, all new issues follow a standardised triage workflow.
+
+### Who triages?
+
+- **Maintainers** perform initial triage.
+- Triage should happen at least **weekly**.
+- New issues are triaged **within 3 days** of creation.
+
+### How to triage an issue
+
+1. **Review the issue** for completeness:
+   - Bug reports should include steps to reproduce and expected vs. actual behaviour.
+   - Feature requests should clearly state the motivation and acceptance criteria.
+   - If incomplete, request additional information using the relevant template.
+
+2. **Apply labels** using this taxonomy:
+
+   | Label | When to use |
+   | ----- | ----------- |
+   | `bug` | Unintended behaviour |
+   | `enhancement` | New feature or capability improvement |
+   | `documentation` | Docs, guides, or examples |
+   | `good first issue` | Simple, well-scoped task suitable for newcomers |
+   | `help wanted` | Needs community contribution; maintainers may not prioritise |
+   | `security` | Security-related issues (use private disclosure for vulnerabilities) |
+   | `question` | Request for information or clarification |
+   | `blocked` | Waiting on external dependency or decision |
+   | `critical` | Severely impacts functionality or security |
+   | `high` | Important; should be scheduled soon |
+   | `medium` | Standard priority |
+   | `low` | Nice to have; backlog |
+
+3. **Assign a priority label** (`critical`, `high`, `medium`, or `low`) based on impact and urgency.
+
+4. **Assign an owner** if you have capacity, or leave unassigned and add `help wanted`.
+
+### Response SLA expectations
+
+Response times and resolution targets by priority:
+
+| Priority | Response SLA | Resolution Target |
+| -------- | ------------ | ----------------- |
+| 🔴 Critical | 24 hours | 1 week |
+| 🟠 High | 72 hours | 2 weeks |
+| 🟡 Medium | 1 week | 1 month |
+| 🟢 Low | Best effort | Backlog |
+
+**Definition:**
+
+- **Response SLA:** Time for maintainer to acknowledge the issue, ask clarifying questions, or begin work.
+- **Resolution target:** Estimated time to merge a PR or close the issue.
+
+### Stale issues
+
+- Issues with no activity for **60 days** are marked with the `stale` label and a comment explaining the inactivity.
+- If no response within **30 days** of the stale warning, the issue is closed automatically.
+- Reopening is always possible if the original concern is still valid.
+
+---
 
 The `main` branch is protected. These rules are enforced via GitHub branch protection settings and cannot be bypassed by any contributor, including maintainers.
 
@@ -130,6 +251,30 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):
 | `security` | Security-related fixes or hardening |
 | `perf` | Performance improvement |
 
+**Breaking changes:**
+
+Append `!` after the type (and optional scope) to flag a breaking change:
+
+```text
+feat!: remove legacy cast_vote_v1 endpoint
+
+refactor(storage)!: rename admin key — existing deployments must re-deploy
+```
+
+For a more detailed explanation, add a `BREAKING CHANGE:` footer in the
+commit body:
+
+```text
+feat!: change vote weight precision from i64 to i128
+
+BREAKING CHANGE: stored vote weights are now i128. Any off-chain tooling
+that reads raw ledger storage must be updated before upgrading.
+```
+
+Both forms are detected by the automated `changelog.yml` workflow and
+surfaced under a prominent **⚠️ BREAKING CHANGES** heading in the
+generated `CHANGELOG.md` entry.
+
 **Examples:**
 
 ```text
@@ -142,6 +287,13 @@ test: add quorum boundary edge cases to prop_tests
 chore: upgrade soroban-sdk to 22.1.0
 
 docs(lifecycle): clarify abstain vote quorum behaviour
+
+feat!: remove deprecated cast_vote_v1 — use cast_vote_v2
+
+feat(token)!: change balance type to i128
+
+BREAKING CHANGE: i64 balances are no longer accepted; migrate
+existing token balances before deploying this version.
 ```
 
 **Rules:**
@@ -149,6 +301,27 @@ docs(lifecycle): clarify abstain vote quorum behaviour
 - Summary line ≤ 72 characters, lower case, no trailing period.
 - Use the imperative mood: "add", "fix", "remove" — not "added" or "fixes".
 - Reference the relevant issue in the body when applicable: `Closes #52`.
+- Always use `!` and/or a `BREAKING CHANGE:` footer for any commit that
+  changes a public interface, storage layout, or event schema in a way
+  that requires action from deployers or consumers.
+
+**Automated CHANGELOG generation:**
+
+On every version tag push (`v*.*.*`) the `changelog.yml` GitHub Actions
+workflow:
+
+1. Collects all conventional commits since the previous tag.
+2. Categorises them into Added / Changed / Removed / Fixed / Security
+   sections based on commit type.
+3. Highlights breaking changes under a `⚠️ BREAKING CHANGES` heading.
+4. Opens a pull request that updates `CHANGELOG.md` and auto-merges
+   once required checks pass.
+
+This means **you do not need to manually edit `CHANGELOG.md`** for a
+release — just write conventional commits and push a version tag.  The
+only manual entry required is updating the `[Unreleased]` section for
+user-visible changes while a feature is in development (as noted in the
+PR checklist).
 
 ---
 
@@ -209,6 +382,49 @@ Every contribution to the contract crates must follow these invariants or the CI
 
 ---
 
+## Architecture Decision Records
+
+An Architecture Decision Record (ADR) captures a significant choice made during development — the context, what was decided, and the trade-offs accepted. ADRs live in [`docs/adr/`](docs/adr/).
+
+### When an ADR is required
+
+Write an ADR whenever a change involves **significant trade-offs** that future contributors should understand. Use this rule of thumb:
+
+> If a reviewer might ask "why did you do it this way?" and the answer is longer than a commit message, write an ADR.
+
+Concrete triggers:
+- Choosing between two or more viable technical approaches
+- Changing a core data structure, storage tier, or contract interface
+- Introducing a new external dependency or protocol
+- Deprecating or replacing an existing architectural pattern
+- Any security-sensitive design choice
+
+You do **not** need an ADR for: bug fixes, test additions, documentation updates, tooling bumps, or refactors that preserve observable behavior.
+
+### ADR template
+
+Copy [`docs/adr/TEMPLATE.md`](docs/adr/TEMPLATE.md) and name your file `ADR-NNN-short-title.md`, where `NNN` is the next sequential number. Fill in all sections and set the status to `Proposed`.
+
+### Review process
+
+1. Open a PR with the new ADR file and a summary of the decision in the PR description.
+2. Link the ADR from [`docs/adr/README.md`](docs/adr/README.md).
+3. Discussion happens in the PR. Once consensus is reached, update the status to `Accepted` before merging.
+4. If a later decision supersedes this ADR, mark the old one `Superseded by ADR-NNN` rather than deleting it.
+
+### Examples
+
+Two good ADRs to read for reference:
+
+- **Simple decision — [ADR-001: Use Stellar Soroban as the smart contract platform](docs/adr/ADR-001-stellar-soroban-platform.md):** A concise record selecting the contract platform with clear reasoning and consequences. Good template for single-choice decisions.
+- **Complex decision — [ADR-006: Instance vs persistent storage tier assignment](docs/adr/ADR-006-instance-vs-persistent-storage.md):** Documents a nuanced trade-off with performance, cost, and correctness implications. Good template for decisions with multiple interacting factors.
+
+### CI warning for large contract changes
+
+A CI check warns when a PR adds a new function larger than 50 lines to `contracts/governance/src/lib.rs` without including a new ADR file. This is a **warning, not a failure** — it is a prompt to consider whether the change warrants documentation, not a hard block. If the change genuinely does not need an ADR, note that in the PR description.
+
+---
+
 ## Pull Request Process
 
 1. **Open a draft PR early** if you want feedback on the approach before the implementation is complete.
@@ -253,6 +469,34 @@ Every contribution to the contract crates must follow these invariants or the CI
 
 ---
 
+## Documenting Security Findings
+
+Security vulnerabilities must be reported privately before their technical
+details are added to a public issue, pull request, or document. Follow the
+responsible disclosure process in [SECURITY.md](SECURITY.md); do not publish an
+unfixed vulnerability or proof of concept in this repository.
+
+After maintainers approve public documentation as part of coordinated
+disclosure:
+
+1. Copy [`docs/security/SEC-TEMPLATE.md`](docs/security/SEC-TEMPLATE.md) and
+  replace its placeholders. The template covers findings, audits, analyses,
+  and security controls; mark irrelevant sections as `Not applicable` rather
+  than inventing details.
+2. Use the filename `SEC-NNN-short-title.md` and title `SEC-NNN: Short title`.
+  Coordinate the next identifier with maintainers before publishing. Existing
+  records include historical identifier collisions, so do not infer the next
+  number from filenames alone.
+3. Record the affected components, date, status, severity (or why it is not
+  applicable), analysis, remediation, verification, and references. Distinguish
+  confirmed impact from assumptions and residual risk.
+4. Link the fixing pull request or advisory and add regression-test or audit
+  evidence where applicable. Do not include credentials, private data, or
+  exploit instructions that remain sensitive.
+
+Use the template for new SEC records and keep existing records' shared metadata
+consistent with it when updating them.
+
 ## Reporting Bugs
 
 **Security vulnerabilities** — do **not** open a public issue. Follow the responsible disclosure process in [SECURITY.md](SECURITY.md).
@@ -272,3 +516,35 @@ Pull requests that fix bugs are welcome alongside or instead of an issue.
 ## License
 
 By contributing you agree that your contributions will be licensed under the [Apache 2.0 License](LICENSE).
+
+---
+
+## Updating test snapshots
+
+Snapshot tests in `contracts/*/test_snapshots/test/` record the full Soroban
+ledger state (events, auth, storage) after each test run.  CI fails if the
+committed snapshots differ from what the current code produces.
+
+### When to update snapshots
+
+Update snapshots whenever you intentionally change an event structure, add a
+new event field, or rename a symbol. **Never** update snapshots to silence an
+unexpected failure — investigate the root cause first.
+
+### How to update
+
+```bash
+# Regenerate all snapshots
+SOROBAN_TEST_SNAPSHOT_UPDATE=1 cargo test
+
+# Or regenerate snapshots for a single contract
+SOROBAN_TEST_SNAPSHOT_UPDATE=1 cargo test -p votechain_governance
+SOROBAN_TEST_SNAPSHOT_UPDATE=1 cargo test -p votechain_token
+
+# Review every changed snapshot file before committing
+git diff contracts/*/test_snapshots/
+```
+
+Commit the updated JSON files together with your code change so reviewers can
+see exactly what the event shape change looks like.
+

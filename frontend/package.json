@@ -7,26 +7,53 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "audit:a11y": "axe http://127.0.0.1:4173 --exit",
     "lint": "eslint src --ext .ts,.tsx",
     "typecheck": "tsc --noEmit",
-    "size": "node scripts/bundle-size.js"
+    "size": "node scripts/bundle-size.js",
+    "test": "vitest run",
+    "test:a11y": "vitest run src/a11y/a11y.test.tsx",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build -o storybook-static"
   },
   "dependencies": {
+    "i18next": "23.16.8",
     "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "react-dom": "18.3.1",
+    "react-i18next": "15.1.2",
+    "react-router-dom": "6.26.2"
   },
   "devDependencies": {
+    "@axe-core/cli": "4.10.2",
     "@axe-core/react": "4.10.2",
+    "@storybook/addon-a11y": "8.3.6",
+    "@storybook/addon-essentials": "8.3.6",
+    "@storybook/react": "8.3.6",
+    "@storybook/react-vite": "8.3.6",
+    "storybook": "8.3.6",
+    "@testing-library/jest-dom": "6.4.6",
+    "@testing-library/react": "16.0.0",
+    "@testing-library/user-event": "14.5.2",
     "@types/react": "18.3.1",
     "@types/react-dom": "18.3.1",
+    "@types/react-router-dom": "5.3.3",
     "@typescript-eslint/eslint-plugin": "7.18.0",
     "@typescript-eslint/parser": "7.18.0",
     "@vitejs/plugin-react": "4.3.4",
+    "@vitest/coverage-v8": "2.0.5",
+    "axe-core": "4.10.3",
     "eslint": "8.57.1",
     "eslint-plugin-jsx-a11y": "6.10.2",
     "eslint-plugin-react": "7.37.4",
     "eslint-plugin-react-hooks": "4.6.2",
+    "jsdom": "24.1.3",
     "typescript": "5.4.5",
-    "vite": "5.4.21"
+    "vite": "5.4.21",
+    "vitest": "2.0.5",
+    "@playwright/test": "1.47.2"
   }
 }
