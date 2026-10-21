@@ -2,6 +2,61 @@
 
 ---
 
+## SEC-002 — v1.0 Third-Party Audit (Pre-Mainnet)
+
+**Status:** 🟡 Planned — mainnet launch is **blocked** until this audit completes  
+**Target version:** governance + token contracts `v1.0.0`  
+**Dependencies:** Timelock enforcement (#42), total supply snapshot (#47)
+
+### Firm selection
+
+The audit must be performed by a recognised Soroban/Stellar smart contract security firm
+(e.g. OtterSec, Veridise, Certora, Runtime Verification, CoinFabrik) that is independent of
+the SEC-001 engagement team where possible.
+
+### Scope
+
+| Area | Components |
+|------|-----------|
+| Governance contract | `contracts/governance/src/**` — proposal lifecycle, voting, quorum, execution, timelock |
+| Token contract | `contracts/token/src/**` — mint/burn, transfers, balance snapshots, total supply snapshot |
+| Access control | admin, `transfer_admin`, two-step `propose_admin_transfer` / `accept_admin_transfer`, pause, upgrade |
+| Storage model | key layout, TTL/archival, instance vs persistent storage, key collisions |
+| Event integrity | every emitted event matches state changes; indexer-relied fields are complete |
+| Re-audit | verification of fixes for all critical/high findings is **included in the engagement** |
+
+See also [`docs/security/audit-scope.md`](docs/security/audit-scope.md) and
+[`docs/security/threat-model.md`](docs/security/threat-model.md).
+
+### Remediation policy
+
+| Severity | Requirement before mainnet |
+|----------|---------------------------|
+| Critical | Must be fixed **and** re-audited |
+| High | Must be fixed **and** re-audited |
+| Medium | Fixed, or documented remediation plan / accepted risk in `docs/security/known-issues.md` |
+| Low / Info | Documented remediation plan or accepted risk |
+
+### Report
+
+The full report will be published in this file (findings summary below) and linked as a PDF.
+
+| Field | Value |
+|-------|-------|
+| Audit firm | _TBD_ |
+| Audit period | _TBD_ |
+| Report link | _TBD_ |
+| Critical / High / Medium / Low / Info | _TBD_ |
+| Re-audit date | _TBD_ |
+
+### Findings
+
+| ID | Title | Severity | Status | Remediation |
+|----|-------|----------|--------|-------------|
+| _pending_ | | | | |
+
+---
+
 ## SEC-001 Formal Audit Report
 
 **Audit firm:** OtterSec  

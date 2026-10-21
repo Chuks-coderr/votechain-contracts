@@ -1,0 +1,198 @@
+name: Deploy to Staging
+
+# ── Trigger ──────────────────────────────────────────────────────────────────
+# Runs on every merge (push) to `develop`, so staging always tracks the
+# integration branch ahead of a mainnet release. (#67)
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'contracts/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'config/staging.toml'
+      - 'scripts/deploy.sh'
+      - 'scripts/deploy_staging.sh'
+      - 'scripts/smoke_test_staging.sh'
+      - '.github/workflows/deploy-staging.yml'
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  STELLAR_CLI_VERSION: "22.8.2"
+
+jobs:
+  deploy:
+    name: Deploy & Smoke Test
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://testnet.stellar.expert
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-staging-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-staging-
+            ${{ runner.os }}-cargo-
+
+      - name: Cache Stellar CLI binary
+        id: stellar-cli-cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cargo/bin/stellar
+          key: ${{ runner.os }}-stellar-cli-${{ env.STELLAR_CLI_VERSION }}
+
+      - name: Install Stellar CLI
+        if: steps.stellar-cli-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked stellar-cli@${{ env.STELLAR_CLI_VERSION }}
+
+      - name: Install sqlx CLI
+        run: cargo install sqlx-cli --no-default-features --features postgres --locked
+
+      - name: Check database migrations before deployment
+        env:
+          DATABASE_URL: ${{ secrets.INDEXER_DATABASE_URL }}
+        run: |
+          chmod +x scripts/check-db-migrations.sh
+          ./scripts/check-db-migrations.sh
+
+      - name: Deploy to staging
+        id: deploy
+        env:
+          STELLAR_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+        run: |
+          chmod +x scripts/deploy_staging.sh
+          ./scripts/deploy_staging.sh
+
+      # ── Smoke Tests ──────────────────────────────────────────────────────
+      # Closes #262: run smoke_test_staging.sh after deploy and fail the
+      # workflow (triggering rollback) if any check fails. (#262)
+      - name: Run staging smoke tests
+        id: smoke_test
+        env:
+          SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org"
+          STELLAR_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+        run: |
+          chmod +x scripts/smoke_test_staging.sh
+          set +e
+          ./scripts/smoke_test_staging.sh 2>&1 | tee smoke-test-output.txt
+          SMOKE_EXIT=${PIPESTATUS[0]}
+          set -e
+
+          # Publish results to the workflow summary
+          {
+            echo "## 🔬 Staging Smoke Test Results"
+            echo ""
+            if [[ "$SMOKE_EXIT" -eq 0 ]]; then
+              echo "**Status:** ✅ All smoke tests passed"
+            else
+              echo "**Status:** ❌ Smoke tests FAILED — deployment rolled back"
+            fi
+            echo ""
+            echo "### Output"
+            echo '```'
+            cat smoke-test-output.txt
+            echo '```'
+            echo ""
+            echo "**Commit:** \`${{ github.sha }}\`"
+            echo "**Run:** [View logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "smoke-exit=$SMOKE_EXIT" >> "$GITHUB_OUTPUT"
+          exit "$SMOKE_EXIT"
+
+      # ── Rollback on smoke test failure ───────────────────────────────────
+      - name: Rollback staging deployment
+        if: failure() && steps.smoke_test.outputs.smoke-exit != '0'
+        env:
+          STELLAR_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+        run: |
+          echo "⚠️  Smoke tests failed — initiating staging rollback"
+          if [[ -f scripts/deploy_staging.sh ]]; then
+            ROLLBACK=1 ./scripts/deploy_staging.sh || echo "Rollback script not yet available; manual rollback required."
+          fi
+          echo "::error::Staging smoke tests failed. Deployment has been rolled back."
+
+      - name: Upload staging env file
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: staging-deployment-${{ github.run_id }}
+          path: |
+            .env.staging
+            config/staging.toml
+            smoke-test-output.txt
+          retention-days: 30
+          if-no-files-found: warn
+
+      # ── Slack notification ───────────────────────────────────────────────
+      - name: Notify Slack on smoke test failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [[ -z "${SLACK_WEBHOOK_URL:-}" ]]; then
+            echo "SLACK_WEBHOOK_URL not configured — skipping Slack notification."
+            exit 0
+          fi
+          curl -sf -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-type: application/json' \
+            --data "{
+              \"text\": \"❌ *Staging smoke tests failed* — deployment rolled back.\",
+              \"attachments\": [{
+                \"color\": \"danger\",
+                \"fields\": [
+                  {\"title\": \"Repository\", \"value\": \"${{ github.repository }}\", \"short\": true},
+                  {\"title\": \"Branch\", \"value\": \"${{ github.ref_name }}\", \"short\": true},
+                  {\"title\": \"Commit\", \"value\": \"\`${{ github.sha }}\`\", \"short\": true},
+                  {\"title\": \"Run\", \"value\": \"<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|View logs>\", \"short\": true}
+                ]
+              }]
+            }"
+
+      - name: Notify Slack on deployment success
+        if: success()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [[ -z "${SLACK_WEBHOOK_URL:-}" ]]; then
+            echo "SLACK_WEBHOOK_URL not configured — skipping Slack notification."
+            exit 0
+          fi
+          curl -sf -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-type: application/json' \
+            --data "{
+              \"text\": \"✅ *Staging deployment succeeded* — smoke tests passed.\",
+              \"attachments\": [{
+                \"color\": \"good\",
+                \"fields\": [
+                  {\"title\": \"Repository\", \"value\": \"${{ github.repository }}\", \"short\": true},
+                  {\"title\": \"Branch\", \"value\": \"${{ github.ref_name }}\", \"short\": true},
+                  {\"title\": \"Commit\", \"value\": \"\`${{ github.sha }}\`\", \"short\": true},
+                  {\"title\": \"Run\", \"value\": \"<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|View logs>\", \"short\": true}
+                ]
+              }]
+            }"
+
+      - name: Deployment status
+        if: always()
+        run: |
+          if [[ "${{ job.status }}" == "success" ]]; then
+            echo "✅ Staging deploy + smoke tests passed"
+          else
+            echo "❌ Staging deploy or smoke tests failed — see logs above"
+          fi

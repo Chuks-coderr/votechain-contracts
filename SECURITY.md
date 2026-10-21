@@ -17,26 +17,43 @@ Please **do not** open a public GitHub Issue for security vulnerabilities. Publi
 Follow this process instead:
 
 1. **Report privately** using one of the contact methods below.
-2. We will **acknowledge your report within 48 hours**.
-3. We will investigate and provide a status update within **7 days**.
-4. We will work with you to agree on a coordinated disclosure date (typically after a fix is released).
-5. You will be credited in the release notes unless you prefer to remain anonymous.
+2. We **acknowledge your report within 48 hours**.
+3. We **triage and assign a severity within 7 days** and share our assessment with you.
+4. We **ship a patch within 30 days for critical issues** (see the SLA table for other severities).
+5. We agree a coordinated disclosure date with you, typically after the fix is released.
+6. You are credited in the [Hall of Fame](#hall-of-fame--acknowledgements) and release notes unless you prefer to remain anonymous.
 
 ---
 
 ## Contact
 
-| Method | Details |
-|--------|---------|
-| Email | **security@votechain.dev** (monitored by maintainers) |
-| GitHub Private Advisory | Use [GitHub Security Advisories](https://github.com/veracindarella/votechain-contracts/security/advisories/new) to report confidentially without email |
+| Method | Details | Expected first response |
+|--------|---------|-------------------------|
+| Email | **security@votechain.dev** (monitored by maintainers) | ≤ 48 hours |
+| GitHub Private Advisory | [GitHub Security Advisories](https://github.com/veracindarella/votechain-contracts/security/advisories/new) — confidential, no email required | ≤ 48 hours |
+
+If you receive no acknowledgement within 48 hours, please follow up via the other channel.
 
 When reporting, please include:
 
 - A clear description of the vulnerability and its potential impact
 - Steps to reproduce or a proof-of-concept (PoC)
-- Affected component(s) — contract name, function, file path
+- Affected component(s) — contract name, function, file path, commit hash
 - Any suggested mitigation or patch (optional but appreciated)
+
+### Encrypting sensitive reports
+
+For sensitive details (working exploits, private data), encrypt your report:
+
+- **Preferred:** use a GitHub Private Advisory — its content is visible only to maintainers and you.
+- **PGP email:** request the current PGP public key by emailing security@votechain.dev with the subject `PGP key request` (no vulnerability details). Confirm the fingerprint with a maintainer through a second channel (for example a GitHub Private Advisory) before use, then encrypt:
+
+  ```bash
+  gpg --import votechain-security.asc
+  gpg --encrypt --armor --recipient security@votechain.dev report.md
+  ```
+
+  Attach `report.md.asc` to your email. Never send private keys or seed phrases, even encrypted.
 
 ---
 
@@ -45,9 +62,25 @@ When reporting, please include:
 | Milestone | Target |
 |-----------|--------|
 | Acknowledgement | **≤ 48 hours** |
-| Initial assessment & severity triage | **≤ 7 days** |
-| Fix or mitigation for critical issues | **≤ 14 days** |
-| Coordinated public disclosure | Agreed with reporter, typically after fix is released |
+| Triage & severity assignment | **≤ 7 days** |
+| Patch — Critical (loss of funds, vote forgery, governance takeover) | **≤ 30 days** |
+| Patch — High | ≤ 60 days |
+| Patch — Medium / Low | Next scheduled release |
+| Status updates during remediation | At least every 7 days |
+| Coordinated public disclosure | Agreed with reporter, typically after the fix is released (max 90 days from report) |
+
+---
+
+## Incident Response
+
+When a vulnerability is confirmed or an exploit is observed on a live deployment:
+
+1. **Contain** — the admin calls `pause` on affected contracts to halt proposal creation and voting.
+2. **Assess** — identify affected deployments, proposals and funds; preserve on-chain evidence (transaction hashes, events).
+3. **Remediate** — develop and review the fix privately (GitHub Security Advisory fork); add regression tests.
+4. **Recover** — deploy the fix via the [upgrade procedure](docs/upgrading.md), then `unpause`.
+5. **Communicate** — publish a GitHub Security Advisory and CHANGELOG entry; notify integrators.
+6. **Review** — publish a post-mortem within 14 days of resolution.
 
 ---
 
@@ -57,7 +90,9 @@ When reporting, please include:
 
 - `contracts/governance/**` — proposal creation, voting, finalisation, execution, cancellation
 - `contracts/token/**` — governance token minting, balances, transfers
+- Contract logic errors: state transitions, quorum/tally calculation, access control, delegation
 - Build and CI tooling that could affect contract correctness (`scripts/`, `.github/workflows/`)
+- `frontend/`, `backend/` and `indexer/` code in this repository
 
 ### Out of scope
 
@@ -73,6 +108,18 @@ When reporting, please include:
 This project **does not currently operate a paid bug bounty program**.
 
 We recognise and publicly credit all valid security reports in release notes. If a bounty program is introduced in the future, this document will be updated with program rules, payout ranges, and a link to the bounty platform.
+
+---
+
+## Hall of Fame / Acknowledgements
+
+We thank the following people for responsibly disclosing security issues:
+
+| Reporter | Issue | Date |
+|----------|-------|------|
+| _Your name here_ | — | — |
+
+Reporters are added here (with their permission) once the fix is released.
 
 ---
 

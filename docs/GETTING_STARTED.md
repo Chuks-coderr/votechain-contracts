@@ -2,6 +2,17 @@
 
 Welcome to VoteChain! This guide will help you set up your development environment and make your first contribution.
 
+## Video Walkthrough
+
+Prefer to learn by watching?  The **[Video Walkthrough for First-Time Contributors](video-walkthrough.md)** is a ~10-minute screen-recording that covers the complete setup and contribution workflow — clone, install dependencies, run tests, make a small change, and run tests again.
+
+A full written transcript is available in the same document for accessibility.
+
+> **Video status:** 🎬 Pending recording — the transcript and placeholder are
+> ready; the video link will be updated once it is uploaded.
+
+---
+
 ## Prerequisites
 
 Before you begin, ensure you have the following installed on your system:
@@ -200,6 +211,166 @@ The script will:
 ### Step 4: Verify Deployment
 
 Check the deployment on [Stellar Expert](https://stellar.expert/explorer/testnet) by searching for your contract addresses.
+
+## Docker Development
+
+If you would rather not install Rust, the Stellar CLI, and a local Stellar node directly on your
+machine, the project ships a `docker-compose.yml` that gives you a fully working development
+environment — a dev container with the Rust toolchain, a local Stellar/Soroban node, the backend
+API, and Redis — with a single command.
+
+### Step 1: Install Docker
+
+Install Docker Desktop (macOS/Windows) or Docker Engine + the Compose plugin (Linux):
+
+- macOS/Windows: [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+- Linux: follow the [official install guide](https://docs.docker.com/engine/install/) and then
+  install the [Compose plugin](https://docs.docker.com/compose/install/linux/)
+
+Verify the installation:
+
+```bash
+docker --version
+docker compose version
+```
+
+### Step 2: Start the Environment
+
+From the repository root:
+
+```bash
+docker compose up -d
+```
+
+This starts four services, defined in `docker-compose.yml`:
+
+| Service | Purpose | Port |
+|---------|---------|------|
+| `stellar-node` | Local Soroban-enabled Stellar node (`stellar/quickstart`) | `8000` |
+| `dev` | Rust toolchain container for building/testing contracts | — |
+| `backend` | Node.js API server | `3001` |
+| `redis` | Cache used by the backend | `6379` |
+
+`dev` and `backend` wait on their `depends_on` healthchecks, so `stellar-node` and `redis` will be
+reported healthy before the dependent services start.
+
+Check that everything came up correctly:
+
+```bash
+docker compose ps
+```
+
+### Step 3: Run Tests Inside the Container
+
+Run the Rust contract test suite inside the `dev` container instead of installing the toolchain
+locally:
+
+```bash
+docker compose exec dev make test
+```
+
+Other `make` targets work the same way, for example:
+
+```bash
+docker compose exec dev make fmt-check
+docker compose exec dev make lint
+docker compose exec dev make build
+```
+
+Follow container logs (useful for the backend or the local node) with:
+
+```bash
+docker compose logs -f backend
+docker compose logs -f stellar-node
+```
+
+### Step 4: Deploy to the Local Node
+
+Once the contracts are built inside the `dev` container, deploy them to the local `stellar-node`
+service:
+
+```bash
+docker compose exec dev bash -c "NETWORK=local ./scripts/deploy.sh"
+```
+
+The `dev` service is already configured with `NETWORK=local` and depends on `stellar-node` being
+healthy, so no extra network flags are needed for local experimentation.
+
+### Step 5: Inspect the Local Stellar Node
+
+The `stellar-node` service runs the [`stellar/quickstart`](https://github.com/stellar/quickstart)
+image with `ENABLE_SOROBAN_RPC=true`, exposing the standard local-network endpoints on port `8000`:
+
+- **Horizon UI / API root:** [http://localhost:8000/](http://localhost:8000/) — confirms the node
+  is up and reports the current ledger.
+- **Friendbot (fund a local test account):**
+
+  ```bash
+  curl "http://localhost:8000/friendbot?addr=<YOUR_PUBLIC_KEY>"
+  ```
+
+- **Soroban RPC endpoint:** `http://localhost:8000/soroban/rpc` — used by the Stellar CLI and
+  `scripts/deploy.sh` when `NETWORK=local`.
+
+### Docker Troubleshooting
+
+#### Port conflicts (`port is already allocated`)
+
+Another process is already bound to `8000`, `3001`, or `6379`. Either stop that process or remap
+the port in `docker-compose.yml`, e.g.:
+
+```yaml
+backend:
+  ports:
+    - "3011:3001"
+```
+
+You can find what's using a port with:
+
+```bash
+lsof -i :8000
+```
+
+#### Image pull failures
+
+If `docker compose up` fails to pull `stellar/quickstart` or `redis:7-alpine` (registry timeouts,
+rate limits, or DNS issues):
+
+```bash
+# Retry the pull explicitly with more verbose output
+docker compose pull stellar-node
+
+# If you're being rate-limited by Docker Hub, log in to raise your pull limit
+docker login
+```
+
+#### `dev` container can't reach `stellar-node`
+
+The healthcheck on `stellar-node` can take up to `start_period: 30s` before the endpoint responds.
+If `dev` or `backend` exit early, wait for the healthcheck to pass first:
+
+```bash
+docker compose ps stellar-node
+docker compose logs stellar-node
+```
+
+#### Stale containers/volumes after a Cargo.toml change
+
+Rebuild the `dev` image and clear the cargo registry cache volume:
+
+```bash
+docker compose build dev
+docker compose down -v
+docker compose up -d
+```
+
+### Step 6: Tear Down
+
+```bash
+docker compose down
+```
+
+Add `-v` to also remove the `cargo-cache` volume if you want a completely clean slate.
 
 ## Making Your First Contribution
 
@@ -422,3 +593,78 @@ Now that you're set up:
 5. Join the Stellar Discord to connect with the community
 
 Happy coding! 🚀
+
+## Health Endpoints
+
+The VoteChain backend exposes two HTTP endpoints for liveness and readiness probing. These are available at the root path (not under `/api`) so that load balancers and container orchestrators (Docker, Kubernetes, etc.) can reach them without API credentials or rate-limit concerns.
+
+### GET /health — Liveness Probe
+
+Confirms the Node.js process is alive and able to handle requests.
+
+**Always returns `200 OK`** as long as the process is running.
+
+```bash
+curl http://localhost:3001/health
+```
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "uptime": 42.3,
+  "version": "1.0.0"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | `string` | Always `"ok"` |
+| `uptime` | `number` | Seconds since the process started (`process.uptime()`) |
+| `version` | `string` | Backend version from `package.json` |
+
+---
+
+### GET /ready — Readiness Probe
+
+Confirms all external dependencies (currently Redis) are healthy before accepting traffic.
+
+**Returns `200 OK`** when Redis is connected:
+
+```bash
+curl http://localhost:3001/ready
+```
+
+```json
+{ "status": "ready" }
+```
+
+**Returns `503 Service Unavailable`** when Redis is not connected:
+
+```json
+{
+  "status": "unavailable",
+  "checks": { "redis": false }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | `string` | `"ready"` or `"unavailable"` |
+| `checks.redis` | `boolean` | `true` when the Redis connection is open |
+
+---
+
+### Docker Compose Healthcheck
+
+The `backend` service in `docker-compose.yml` is configured with a healthcheck that polls `/health` every 30 seconds:
+
+```yaml
+healthcheck:
+  test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+  interval: 30s
+  timeout: 10s
+  retries: 3
+```
+
+This means other services that use `depends_on: backend` with a `condition: service_healthy` will wait until the backend reports healthy before starting.

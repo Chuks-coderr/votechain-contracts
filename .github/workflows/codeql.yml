@@ -8,6 +8,11 @@ on:
     - cron: '0 8 * * 1'
 jobs:
   analyze:
+    # CodeQL's Rust support is limited (no stable query pack), so the Rust
+    # side of SAST is covered by `cargo clippy -D warnings` and
+    # `cargo audit --deny warnings` in ci.yml / audit.yml instead. See
+    # docs/security/sast-scanning.md for the full rationale.
+    name: Analyze (javascript-typescript)
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -17,6 +22,48 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: github/codeql-action/init@fee9466b8957867761f2d78f922ab084e3e2dd17
         with:
-          languages: rust
-      - uses: github/codeql-action/autobuild@fee9466b8957867761f2d78f922ab084e3e2dd17
+          languages: javascript-typescript
+          queries: security-extended
       - uses: github/codeql-action/analyze@fee9466b8957867761f2d78f922ab084e3e2dd17
+        with:
+          category: '/language:javascript-typescript'
+
+  enforce-severity-gate:
+    name: Block on critical/high findings
+    needs: analyze
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      security-events: read
+      contents: read
+    steps:
+      - name: Fail if CodeQL found open critical/high alerts for this PR
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          script: |
+            const { data: alerts } = await github.rest.codeScanning.listAlertsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              tool_name: 'CodeQL',
+              ref: `refs/pull/${context.issue.number}/merge`,
+            });
+
+            const blocking = alerts.filter((a) => {
+              const severity = a.rule?.security_severity_level;
+              return severity === 'critical' || severity === 'high';
+            });
+
+            if (blocking.length > 0) {
+              for (const a of blocking) {
+                core.error(
+                  `CodeQL alert #${a.number}: ${a.rule.description} ` +
+                  `(severity: ${a.rule.security_severity_level}) - ${a.html_url}`
+                );
+              }
+              core.setFailed(
+                `${blocking.length} critical/high severity CodeQL finding(s) must be resolved before merge.`
+              );
+            } else {
+              core.info('No open critical/high severity CodeQL alerts for this PR.');
+            }
