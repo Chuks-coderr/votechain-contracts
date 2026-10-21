@@ -83,7 +83,12 @@ async function fetchProposals(): Promise<Proposal[]> {
   return body.data ?? body.proposals ?? [];
 }
 
-async function tick(): Promise<void> {
+export function resetForTesting(): void {
+  seen.clear();
+  initialised = false;
+}
+
+export async function tick(): Promise<void> {
   const proposals = await fetchProposals();
   for (const p of proposals) {
     const key = String(p.id);

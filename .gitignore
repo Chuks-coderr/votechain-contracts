@@ -11,3 +11,25 @@ backend/package-lock.json
 
 # Never commit real secrets — use .env.example as the template
 # .env.example is intentionally tracked
+
+# Test snapshots (regression snapshot files — do not commit)
+contracts/governance/test_snapshots/
+contracts/token/test_snapshots/
+
+# WASM size tracking temp files
+wasm-size-history/
+
+# Bot dist output
+bots/governance-alerts/dist/
+
+# Coverage reports
+lcov.info
+*.profraw
+coverage/
+
+# Editor and OS files
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
