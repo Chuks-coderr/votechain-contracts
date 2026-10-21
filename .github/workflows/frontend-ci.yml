@@ -16,13 +16,17 @@ jobs:
         working-directory: frontend
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # Fetch enough history to compare bundle sizes with base branch
+          fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@cdca7365b2dadb8aad0a33bc7601856ffabcc48e # v4.3.0
         with:
           node-version: '20'
           cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
         run: npm install
@@ -33,8 +37,136 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
+      - name: Run unit and integration tests
+        run: npm run test
+
+      - name: Run accessibility tests (WCAG 2.1 AA)
+        run: npm run test:a11y -- --reporter=json --outputFile=a11y-results.json
+
+      - name: Upload accessibility test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: accessibility-test-results
+          path: frontend/a11y-results.json
+          if-no-files-found: ignore
+
       - name: Build production bundle
         run: npm run build
 
+      - name: Install Chrome for axe
+        uses: browser-actions/setup-chrome@c785b87e244131f27c9f19c1a33e2ead956ab7ce # v1.7.3
+
+      - name: Start preview server
+        run: |
+          npm run preview -- --host 127.0.0.1 > /tmp/votechain-preview.log 2>&1 &
+          echo $! > /tmp/votechain-preview.pid
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            curl --fail --silent http://127.0.0.1:4173 >/dev/null && break
+            if [ "$attempt" = "10" ]; then
+              cat /tmp/votechain-preview.log
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Run axe WCAG AA audit
+        run: npm run audit:a11y
+
+      - name: Stop preview server
+        if: always()
+        run: kill "$(cat /tmp/votechain-preview.pid)" 2>/dev/null || true
+
       - name: Track bundle size
         run: npm run size
+
+      - name: Upload bundle report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bundle-report
+          path: frontend/dist/bundle-report.json
+          if-no-files-found: ignore
+
+      # On pull requests, compare bundle size with the base branch and comment
+      # if the main bundle changed by more than 5%.
+      - name: Compare bundle size with base branch
+        if: github.event_name == 'pull_request'
+        id: bundle_compare
+        run: |
+          # Save the current (PR) report
+          PR_REPORT=$(cat dist/bundle-report.json)
+          PR_GZIP=$(echo "$PR_REPORT" | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8'); console.log(JSON.parse(d).mainBundleGzipKb)")
+
+          # Check out the base branch, build, and measure
+          git stash --include-untracked 2>/dev/null || true
+          git fetch origin "${{ github.base_ref }}" --depth=1 2>/dev/null || true
+          BASE_SHA=$(git rev-parse "origin/${{ github.base_ref }}" 2>/dev/null || echo "")
+
+          if [ -z "$BASE_SHA" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git worktree add /tmp/base-branch "$BASE_SHA" 2>/dev/null || { echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0; }
+          cd /tmp/base-branch/frontend
+          npm install --silent 2>/dev/null || { echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0; }
+          npm run build --silent 2>/dev/null || { echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0; }
+          npm run size --silent 2>/dev/null || true
+          BASE_GZIP=$(cat dist/bundle-report.json | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8'); console.log(JSON.parse(d).mainBundleGzipKb)" 2>/dev/null || echo "0")
+
+          cd "$GITHUB_WORKSPACE/frontend"
+          git worktree remove /tmp/base-branch --force 2>/dev/null || true
+
+          # Calculate percentage change
+          CHANGE=$(node -e "
+            const pr = parseFloat('$PR_GZIP');
+            const base = parseFloat('$BASE_GZIP');
+            if (base === 0) { console.log('0'); process.exit(0); }
+            const pct = ((pr - base) / base * 100).toFixed(1);
+            console.log(pct);
+          ")
+
+          echo "pr_gzip=$PR_GZIP" >> "$GITHUB_OUTPUT"
+          echo "base_gzip=$BASE_GZIP" >> "$GITHUB_OUTPUT"
+          echo "change=$CHANGE" >> "$GITHUB_OUTPUT"
+
+          # Determine if change exceeds 5% threshold
+          SIGNIFICANT=$(node -e "console.log(Math.abs($CHANGE) > 5 ? 'true' : 'false')")
+          echo "significant=$SIGNIFICANT" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Post bundle size comment on PR
+        if: >
+          github.event_name == 'pull_request' &&
+          steps.bundle_compare.outputs.skip != 'true' &&
+          steps.bundle_compare.outputs.significant == 'true'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const prGzip   = '${{ steps.bundle_compare.outputs.pr_gzip }}';
+            const baseGzip = '${{ steps.bundle_compare.outputs.base_gzip }}';
+            const change   = '${{ steps.bundle_compare.outputs.change }}';
+            const sign     = parseFloat(change) > 0 ? '+' : '';
+            const emoji    = parseFloat(change) > 0 ? '📈' : '📉';
+
+            const body = [
+              '## Bundle Size Report ' + emoji,
+              '',
+              '> Bundle size changed by more than 5% in this PR.',
+              '',
+              '| | Gzip (KB) |',
+              '|---|---|',
+              `| Base (\`${{ github.base_ref }}\`) | ${baseGzip} KB |`,
+              `| This PR | ${prGzip} KB |`,
+              `| Change | ${sign}${change}% |`,
+              '',
+              `**Budget limit:** 250 KB gzip`,
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });

@@ -92,3 +92,24 @@ A: Yes. Call `get_proposal(proposal_id)` to read the full proposal state, or `ha
 | 103 | ProposalExpired | Voting period has ended |
 | 104 | InsufficientStake | Voter holds no governance tokens |
 | 105 | InvalidStatus | Proposal is not in the required state for the operation |
+
+---
+
+## Integration
+
+> Tip: use Ctrl+F / Cmd+F to search this page. Have a question that isn't answered here? Open a PR adding it to this section using the [PR template](../.github/PULL_REQUEST_TEMPLATE.md) — community-contributed questions are welcome.
+
+**Q: How do I integrate VoteChain with my DAO token?**  
+A: Pass your token's contract ID as `voting_token` when calling `initialize` on the governance contract ([`contracts/governance/src/lib.rs`](../contracts/governance/src/lib.rs)). The token must implement the standard Soroban token interface (at minimum `balance`), because vote weight is read from it when `cast_vote` is called — see [ADR-002](adr/ADR-002-token-weighted-voting.md) and [ADR-003](adr/ADR-003-live-balance-over-snapshot.md). Stellar classic assets can be used through their Stellar Asset Contract (SAC) address. For multiple tokens see [ADR-005 multi-asset voting](ADR-005-multi-asset-voting.md).
+
+**Q: How do I index historical proposals?**  
+A: Every state transition emits an on-chain event (`created`, `vote`, `final`, `executed`, `cancelled`, …) — see [events.md](events.md) and [ADR-005](adr/ADR-005-on-chain-events.md). The bundled [indexer](../indexer/README.md) reads these events via Soroban RPC `getEvents` and stores them for the [API](api-reference.md). For a one-off backfill, iterate `get_proposal(id)` for every id up to `proposal_count()`. RPC only retains recent events, so run the indexer continuously to keep full history.
+
+**Q: What happens if the indexer is offline?**  
+A: Nothing on-chain is affected — proposals, votes and finalisation are enforced by the contracts, not the indexer. Only off-chain reads (API, frontend lists) become stale. When it restarts, the indexer resumes from its last processed ledger; if the gap exceeds the RPC event retention window, rebuild state by reading `get_proposal` / `has_voted` directly. See [indexer/README.md](../indexer/README.md).
+
+**Q: Can proposals be edited after creation?**  
+A: No. Title, description and duration are immutable once `create_proposal` succeeds, so voters always see exactly what they vote on. The admin can adjust quorum via `update_quorum` (emits a `qupdate` event). For any other change, the admin cancels the proposal and a new one is created. See [lifecycle.md](lifecycle.md).
+
+**Q: How do I test against mainnet?**  
+A: Don't send test transactions to mainnet. Instead: (1) run `cargo test` — the Soroban test environment mirrors on-chain semantics; (2) deploy to testnet with [testnet-deployment.md](testnet-deployment.md); (3) for mainnet parity, simulate calls against mainnet state with `stellar contract invoke ... --network mainnet --send=no`, which never submits a transaction. Production rollout follows the [mainnet runbook](mainnet-runbook.md) and [compatibility.md](compatibility.md).

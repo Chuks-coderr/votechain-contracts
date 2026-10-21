@@ -16,7 +16,7 @@
 use super::*;
 use soroban_sdk::{
     symbol_short,
-    testutils::{Address as _, Events},
+    testutils::{Address as _, Events, Ledger},
     Address, Env, IntoVal, TryFromVal,
 };
 
@@ -237,7 +237,9 @@ fn test_approve_sets_allowance_and_allows_transfer_from() {
     let recipient = Address::generate(&env);
 
     c.initialize(&admin, &1_000);
-    c.approve(&admin, &spender, &500);
+    // expiry_ledger = current + 1000 ledgers (well in the future)
+    let expiry = env.ledger().sequence() + 1000;
+    c.approve(&admin, &spender, &500, &expiry);
 
     // spender can transfer up to the approved amount
     c.transfer_from(&spender, &admin, &recipient, &200);
@@ -259,7 +261,8 @@ fn test_transfer_from_insufficient_allowance() {
     let recipient = Address::generate(&env);
 
     c.initialize(&admin, &1_000);
-    c.approve(&admin, &spender, &100);
+    let expiry = env.ledger().sequence() + 1000;
+    c.approve(&admin, &spender, &100, &expiry);
     c.transfer_from(&spender, &admin, &recipient, &200);
 }
 
@@ -272,7 +275,8 @@ fn test_transfer_from_insufficient_balance() {
     let recipient = Address::generate(&env);
 
     c.initialize(&admin, &100);
-    c.approve(&admin, &spender, &500);
+    let expiry = env.ledger().sequence() + 1000;
+    c.approve(&admin, &spender, &500, &expiry);
     c.transfer_from(&spender, &admin, &recipient, &200);
 }
 
@@ -286,7 +290,76 @@ fn test_approve_zero_address_reverts() {
         "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
     );
     c.initialize(&admin, &1_000);
-    c.approve(&admin, &zero, &100);
+    let expiry = env.ledger().sequence() + 1000;
+    c.approve(&admin, &zero, &100, &expiry);
+}
+
+/// #52: transfer_from on an expired allowance must return AllowanceExpired.
+#[test]
+#[should_panic]
+fn test_transfer_from_expired_allowance_reverts() {
+    let (env, c) = setup();
+    let admin = Address::generate(&env);
+    let spender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    c.initialize(&admin, &1_000);
+    // Approve with expiry at ledger 10.
+    let current = env.ledger().sequence();
+    c.approve(&admin, &spender, &500, &(current + 10));
+    // Advance ledger past expiry.
+    env.ledger().with_mut(|l| l.sequence_number += 20);
+    // Must panic (AllowanceExpired).
+    c.transfer_from(&spender, &admin, &recipient, &100);
+}
+
+/// #52: allowance() returns 0 after expiry.
+#[test]
+fn test_allowance_returns_zero_after_expiry() {
+    let (env, c) = setup();
+    let admin = Address::generate(&env);
+    let spender = Address::generate(&env);
+
+    c.initialize(&admin, &1_000);
+    let current = env.ledger().sequence();
+    c.approve(&admin, &spender, &500, &(current + 5));
+    // Within validity window — allowance should be 500.
+    assert_eq!(c.allowance(&admin, &spender), 500);
+    // Advance ledger past expiry.
+    env.ledger().with_mut(|l| l.sequence_number += 10);
+    // Must return 0 after expiry.
+    assert_eq!(c.allowance(&admin, &spender), 0);
+}
+
+/// #52: approve with expiry_ledger < current sequence must revert.
+#[test]
+#[should_panic]
+fn test_approve_past_expiry_reverts() {
+    let (env, c) = setup();
+    let admin = Address::generate(&env);
+    let spender = Address::generate(&env);
+
+    c.initialize(&admin, &1_000);
+    // Advance ledger first so sequence > 0, then try to set a past expiry.
+    env.ledger().with_mut(|l| l.sequence_number = 100);
+    c.approve(&admin, &spender, &500, &50_u32); // 50 < 100, must revert
+}
+
+/// #52: transfer_from within validity window succeeds.
+#[test]
+fn test_transfer_from_within_expiry_succeeds() {
+    let (env, c) = setup();
+    let admin = Address::generate(&env);
+    let spender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    c.initialize(&admin, &1_000);
+    let current = env.ledger().sequence();
+    c.approve(&admin, &spender, &500, &(current + 100));
+    // Advance a few ledgers but stay within window.
+    env.ledger().with_mut(|l| l.sequence_number += 50);
+    c.transfer_from(&spender, &admin, &recipient, &200);
+    assert_eq!(c.balance(&recipient), 200);
 }
 
 #[test]

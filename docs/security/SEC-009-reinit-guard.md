@@ -1,9 +1,15 @@
 # SEC-009 — Re-initialization Guard
 
-**Component:** `contracts/governance/src/lib.rs` → `initialize`  
-**Found:** 2026-04-24  
-**Severity:** Critical  
-**Status:** ✅ Fixed
+| Field | Value |
+|---|---|
+| Record type | Security finding |
+| Date | 2026-04-24 |
+| Status | Fixed |
+| Severity | Critical |
+| Affected components | `contracts/governance/src/lib.rs` → `initialize` |
+| Reporter / reviewer | Not recorded |
+
+Format: [SEC template](SEC-TEMPLATE.md).
 
 ---
 

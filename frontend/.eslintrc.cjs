@@ -24,6 +24,8 @@ module.exports = {
   rules: {
     'react/react-in-jsx-scope': 'off',
     '@typescript-eslint/no-unused-vars': ['error', { 'argsIgnorePattern': '^_' }],
-    'jsx-a11y/no-autofocus': 'off'
+    'jsx-a11y/no-autofocus': 'off',
+    // Prevent stored XSS: proposal content must render as JSX text nodes (#96)
+    'react/no-danger': 'error'
   },
 };

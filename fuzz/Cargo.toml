@@ -1,0 +1,25 @@
+[package]
+name = "votechain-governance-fuzz"
+version = "0.1.0"
+publish = false
+edition = "2021"
+
+[dependencies]
+soroban-sdk = { version = "=22.1.0", features = ["testutils"] }
+soroban-contract-env = "22.1.0"
+proptest = "1.4"
+
+[[bin]]
+name = "fuzz_create_proposal"
+path = "fuzz_targets/fuzz_create_proposal.rs"
+
+[[bin]]
+name = "fuzz_cast_vote"
+path = "fuzz_targets/fuzz_cast_vote.rs"
+
+[[bin]]
+name = "fuzz_finalise"
+path = "fuzz_targets/fuzz_finalise.rs"
+
+[lib]
+path = "lib.rs"

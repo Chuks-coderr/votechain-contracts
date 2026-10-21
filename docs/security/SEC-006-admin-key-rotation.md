@@ -1,8 +1,15 @@
 # SEC-006: Admin Key Rotation Procedure
 
-**Status:** Implemented  
-**Priority:** High  
-**Affects:** `GovernanceContract` — `propose_admin_transfer`, `accept_admin_transfer`
+| Field | Value |
+|---|---|
+| Record type | Security control / operational procedure |
+| Date | Not recorded |
+| Status | Implemented |
+| Severity | Not assessed; priority is high |
+| Affected components | `GovernanceContract` — `propose_admin_transfer`, `accept_admin_transfer` |
+| Reporter / reviewer | Not recorded |
+
+Format: [SEC template](SEC-TEMPLATE.md).
 
 ---
 
@@ -57,6 +64,60 @@ explicitly accept within a configurable window before the key is transferred.
 
 4. Old admin has no further privileges
 ```
+
+---
+
+## Operational Runbook (`scripts/rotate-admin.sh`)
+
+Tooling: `scripts/rotate-admin.sh` automates both steps with safety checks.
+
+### Pre-flight
+
+1. Generate the new admin key on an air-gapped / hardware-backed device and import it as a
+   `stellar keys` identity on the nominee's machine only.
+2. Fund the new admin account (the script refuses unfunded / inactive accounts, checked via Horizon).
+3. Announce the maintenance window to stakeholders and confirm no admin operations
+   (execute / cancel / upgrade) are pending.
+
+### Step 1 — Propose (current admin)
+
+```bash
+NETWORK=mainnet CONTRACT_ID=C... CURRENT_ADMIN=admin-key NEW_ADMIN=G... \
+  ./scripts/rotate-admin.sh propose 172800
+```
+
+The script:
+- validates `NEW_ADMIN` is a well-formed `G…` address, differs from the current admin, and is funded/active;
+- prints a summary and requires the operator to **type the current admin address** to confirm;
+- signs `propose_admin_transfer` with the current admin key, emitting the on-chain
+  `admprop` (`admin_transfer_proposed`) audit event.
+
+### Step 2 — Verify
+
+- Confirm the `admprop` event on a block explorer / indexer: `(current_admin, nominee, expiry)`.
+- Verify the nominee address out-of-band (second channel) before accepting.
+
+### Step 3 — Accept (new admin)
+
+```bash
+NETWORK=mainnet CONTRACT_ID=C... NEW_ADMIN_IDENTITY=new-admin-key \
+  ./scripts/rotate-admin.sh accept
+```
+
+The nominee re-confirms by typing their own address; the script signs `accept_admin_transfer`,
+emitting `admxfer`.
+
+### Step 4 — Post-rotation
+
+1. Confirm the `admxfer` event and that an admin-only call signed by the old key now fails.
+2. Revoke / archive old admin key material; update secrets in CI and `config/`.
+3. Record the rotation (date, tx hashes, operators) in the ops log.
+
+### Rollback
+
+If the nominee key is compromised **before** acceptance, the current admin re-runs `propose`
+with a different nominee (the new nomination replaces the old). If the window expires, the
+stale nomination is cleared automatically on the next `accept` attempt; simply propose again.
 
 ---
 

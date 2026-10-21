@@ -1,0 +1,55 @@
+/* ============================================================
+   VoteChain — Skeleton loading styles  (issue #13)
+   Uses design tokens from styles.css so they work in
+   both light and dark mode automatically.
+   Import after styles.css.
+   ============================================================ */
+
+/* ── Shimmer animation ───────────────────────────────────── */
+@keyframes skeleton-shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position:  400px 0; }
+}
+
+/* ── Base skeleton block ─────────────────────────────────── */
+.skeleton-block {
+  display: block;
+  border-radius: var(--radius-sm, 6px);
+  background: linear-gradient(
+    90deg,
+    var(--skeleton-base)   25%,
+    var(--skeleton-shine)  50%,
+    var(--skeleton-base)   75%
+  );
+  background-size: 800px 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+/* Light mode skeleton tokens */
+:root {
+  --skeleton-base:  #e2e8f0;
+  --skeleton-shine: #f1f5f9;
+}
+
+/* Dark mode skeleton tokens */
+html.dark {
+  --skeleton-base:  #1e2233;
+  --skeleton-shine: #272b40;
+}
+
+/* ── Card skeleton — inherits proposal-card padding/layout ── */
+.skeleton-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg, 14px);
+  padding: 1.25rem 1.5rem;
+  box-shadow: var(--shadow-card);
+}
+
+/* ── Reduced motion — replace animation with static colour ─ */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-block {
+    animation: none;
+    background: var(--skeleton-base);
+  }
+}

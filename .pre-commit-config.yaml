@@ -1,0 +1,41 @@
+# Pre-commit hook configuration for VoteChain.
+#
+# Prevents secrets (private keys, mnemonics, API tokens, etc.) from being
+# accidentally committed. The `detect-secrets` hook scans staged diffs for
+# high-entropy strings and known secret patterns and aborts the commit if
+# anything suspicious is found.
+#
+# Install once per clone:
+#   pip install pre-commit
+#   pre-commit install
+#
+# Run manually against all tracked files:
+#   pre-commit run --all-files
+#
+# Update hook versions:
+#   pre-commit autoupdate
+
+repos:
+  # detect-secrets — detects high-entropy strings and known secret patterns.
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        name: Detect secrets
+        # Exclude generated lock files and test fixtures that may contain
+        # intentional placeholder values.
+        exclude: |
+          (?x)^(
+            Cargo\.lock|
+            .*\.snap|
+            .*test.*\.rs|
+            .*test_helpers.*\.rs
+          )$
+        args: ["--baseline", ".secrets.baseline"]
+
+  # Prevent committing private keys directly (belt-and-suspenders check).
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: detect-private-key
+        name: Detect private keys

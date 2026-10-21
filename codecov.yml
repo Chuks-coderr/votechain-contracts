@@ -1,0 +1,15 @@
+coverage:
+  status:
+    project:
+      governance:
+        target: 90%
+        flags: [contracts]
+        paths: [contracts/governance/]
+    patch:
+      default:
+        target: 85%
+comment:
+  layout: "diff, flags, files"
+  require_changes: false
+github_checks:
+  annotations: true

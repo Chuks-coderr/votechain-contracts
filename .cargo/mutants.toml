@@ -1,0 +1,5 @@
+# cargo-mutants configuration — see docs/testing/mutation-testing.md
+examine_globs = ["contracts/governance/src/lib.rs", "contracts/token/src/lib.rs"]
+# Version getters are constant metadata; mutating them adds noise only.
+exclude_re = ["get_version"]
+timeout_multiplier = 3.0

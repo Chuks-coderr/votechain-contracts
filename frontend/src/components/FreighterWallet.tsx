@@ -1,7 +1,17 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 
-const STELLAR_NETWORK = "TESTNET";
+export const STELLAR_NETWORK: "TESTNET" | "MAINNET" =
+  (import.meta.env.VITE_STELLAR_NETWORK ?? "TESTNET").toUpperCase() === "MAINNET"
+    ? "MAINNET"
+    : "TESTNET";
 const FREIGHTER_DOWNLOAD = "https://www.freighter.app/";
+/** Button stays disabled for this long after every click (debounce). */
+export const CONNECT_DEBOUNCE_MS = 2000;
+/** Consecutive failures before a cooldown is enforced. */
+export const MAX_FAILED_ATTEMPTS = 3;
+/** Cooldown applied after MAX_FAILED_ATTEMPTS consecutive failures. */
+export const COOLDOWN_MS = 30000;
 
 type FreighterApi = {
   isConnected: () => Promise<boolean>;
@@ -21,6 +31,7 @@ function truncate(addr: string) {
 }
 
 export function FreighterWallet() {
+  const { t } = useTranslation();
   const [wallet, setWallet] = useState<WalletState>({
     address: null,
     network: null,
@@ -28,6 +39,20 @@ export function FreighterWallet() {
   });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [throttled, setThrottled] = useState(false);
+  const [cooldownUntil, setCooldownUntil] = useState<number | null>(null);
+  const failedAttempts = useRef(0);
+  const inFlight = useRef(false);
+
+  // Clear the cooldown once it expires.
+  useEffect(() => {
+    if (cooldownUntil === null) return;
+    const id = setTimeout(() => {
+      setCooldownUntil(null);
+      failedAttempts.current = 0;
+    }, Math.max(0, cooldownUntil - Date.now()));
+    return () => clearTimeout(id);
+  }, [cooldownUntil]);
 
   // Check if already connected on mount
   useEffect(() => {
@@ -38,6 +63,7 @@ export function FreighterWallet() {
         freighter.getPublicKey().then((address: string) => {
           freighter.getNetwork().then((network: string) => {
             setWallet({ address, network, connected: true });
+            setMismatchDismissed(false);
           });
         });
       }
@@ -45,11 +71,18 @@ export function FreighterWallet() {
   }, []);
 
   async function connect() {
+    // Rate limiting: ignore clicks while a request is in flight, during the
+    // debounce window, or during a failure cooldown. Never retried automatically.
+    if (inFlight.current || throttled || cooldownUntil !== null) return;
+    setThrottled(true);
+    setTimeout(() => setThrottled(false), CONNECT_DEBOUNCE_MS);
+
     const freighter = (window as unknown as Record<string, unknown>).freighter as FreighterApi | undefined;
     if (!freighter) {
-      setError("Freighter extension not found. Please install it first.");
+      setError(t("wallet.notFound"));
       return;
     }
+    inFlight.current = true;
     setLoading(true);
     setError(null);
     try {
@@ -57,9 +90,15 @@ export function FreighterWallet() {
       const address: string = await freighter.getPublicKey();
       const network: string = await freighter.getNetwork();
       setWallet({ address, network, connected: true });
+      failedAttempts.current = 0;
     } catch (e: unknown) {
-      setError((e as { message?: string })?.message ?? "Failed to connect wallet.");
+      setError((e as { message?: string })?.message ?? t("wallet.failed"));
+      failedAttempts.current += 1;
+      if (failedAttempts.current >= MAX_FAILED_ATTEMPTS) {
+        setCooldownUntil(Date.now() + COOLDOWN_MS);
+      }
     } finally {
+      inFlight.current = false;
       setLoading(false);
     }
   }
@@ -69,16 +108,21 @@ export function FreighterWallet() {
     setError(null);
   }
 
+  const walletNetwork = wallet.network?.toUpperCase() ?? null;
   const networkMismatch =
-    wallet.connected &&
-    wallet.network &&
-    wallet.network.toUpperCase() !== STELLAR_NETWORK;
+    wallet.connected && walletNetwork !== null && walletNetwork !== STELLAR_NETWORK;
+  const showMismatch = networkMismatch && !mismatchDismissed;
 
   return (
     <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
       {!wallet.connected ? (
-        <button onClick={connect} disabled={loading} aria-label="Connect Freighter Wallet">
-          {loading ? "Connecting…" : "Connect Wallet"}
+        <button
+          onClick={connect}
+          disabled={loading || throttled || cooldownUntil !== null}
+          aria-busy={loading}
+          aria-label={t("wallet.connectLabel")}
+        >
+          {loading ? t("wallet.connecting") : t("wallet.connect")}
         </button>
       ) : (
         <>
@@ -86,14 +130,34 @@ export function FreighterWallet() {
             {truncate(wallet.address!)}
           </span>
           <button onClick={disconnect} aria-label="Disconnect wallet">
-            Disconnect
+            {t("wallet.disconnect")}
           </button>
         </>
       )}
 
-      {networkMismatch && (
-        <span role="alert" style={{ color: "orange" }}>
-          ⚠ Network mismatch: connected to {wallet.network}, expected {STELLAR_NETWORK}
+      {showMismatch && (
+        <span
+          role="alert"
+          data-testid="network-mismatch"
+          style={{
+            color: STELLAR_NETWORK === "MAINNET" ? "red" : "orange",
+            fontWeight: STELLAR_NETWORK === "MAINNET" ? "bold" : undefined,
+          }}
+        >
+          {STELLAR_NETWORK === "MAINNET"
+            ? t("wallet.networkMismatchMainnet", { network: wallet.network })
+            : walletNetwork === "PUBLIC" || walletNetwork === "MAINNET"
+              ? t("wallet.networkMismatchTestnet", { network: wallet.network })
+              : t("wallet.networkMismatch", { network: wallet.network, expected: STELLAR_NETWORK })}{" "}
+          <button onClick={() => setMismatchDismissed(true)} aria-label={t("wallet.dismissWarning")}>
+            ×
+          </button>
+        </span>
+      )}
+
+      {cooldownUntil !== null && (
+        <span role="status" style={{ color: "orange" }}>
+          {t("wallet.cooldown", { seconds: Math.ceil(COOLDOWN_MS / 1000) })}
         </span>
       )}
 
@@ -102,7 +166,7 @@ export function FreighterWallet() {
           {error}{" "}
           {error.includes("not found") && (
             <a href={FREIGHTER_DOWNLOAD} target="_blank" rel="noreferrer">
-              Install Freighter
+              {t("wallet.install")}
             </a>
           )}
         </span>

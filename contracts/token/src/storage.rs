@@ -30,7 +30,7 @@
 //! - **Temporary** – short-lived allowances (`Allowance`).
 //!   Automatically expires; no manual TTL management required.
 
-use crate::types::{ContractError, TokenDataKey};
+use crate::types::{Allowance, ContractError, TokenDataKey};
 use soroban_sdk::{Address, Env};
 
 // =============================================================================
@@ -77,19 +77,34 @@ pub fn set_balance(env: &Env, owner: &Address, amount: i128) {
         .set(&TokenDataKey::Balance(owner.clone()), &amount);
 }
 
-/// Returns the spending allowance granted by `owner` to `spender`. Defaults to `0`.
+/// Returns the spending allowance granted by `owner` to `spender`.
+///
+/// Returns `0` if no allowance exists or if the allowance has expired
+/// (i.e. `current_ledger_sequence > expiry_ledger`).
 pub fn allowance(env: &Env, owner: &Address, spender: &Address) -> i128 {
+    let key = TokenDataKey::Allowance(owner.clone(), spender.clone());
+    match env.storage().temporary().get::<_, Allowance>(&key) {
+        Some(a) if env.ledger().sequence() <= a.expiry_ledger => a.amount,
+        _ => 0,
+    }
+}
+
+/// Returns the full [`Allowance`] record granted by `owner` to `spender`, or
+/// `None` if no allowance has been set.
+///
+/// Unlike [`allowance`] this returns the raw record even if it has expired,
+/// so callers that need to inspect the expiry can do so.
+pub fn get_allowance(env: &Env, owner: &Address, spender: &Address) -> Option<Allowance> {
     env.storage()
         .temporary()
         .get(&TokenDataKey::Allowance(owner.clone(), spender.clone()))
-        .unwrap_or(0)
 }
 
 /// Sets the spending allowance granted by `owner` to `spender`.
-pub fn set_allowance(env: &Env, owner: &Address, spender: &Address, amount: i128) {
+pub fn set_allowance(env: &Env, owner: &Address, spender: &Address, record: &Allowance) {
     env.storage().temporary().set(
         &TokenDataKey::Allowance(owner.clone(), spender.clone()),
-        &amount,
+        record,
     );
 }
 

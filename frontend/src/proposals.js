@@ -4,189 +4,104 @@
  * Renders governance proposals with state badges, vote summaries,
  * countdown timers for active proposals, and paginated navigation.
  *
- * Data source: replace `MOCK_PROPOSALS` with a real Stellar RPC /
- * Horizon call to your deployed governance contract.
+ * Data source: fetched from the backend GET /api/proposals endpoint,
+ * which in turn reads from the Stellar RPC / indexer.
+ * Proposals are refreshed automatically every 30 seconds when any
+ * Active proposal is present in the current view.
  */
 
 'use strict';
 
-// ── Configuration ────────────────────────────────────────────────────────────
+// ── Configuration ─────────────────────────────────────────────────────────────
 
-const PAGE_SIZE = 10; // proposals per page
+const PAGE_SIZE          = 10;   // proposals per page
+const REFRESH_INTERVAL   = 30_000; // ms — auto-refresh when active proposals exist
+const API_ENDPOINT       = '/api/proposals';
 
-// ── Mock data ────────────────────────────────────────────────────────────────
-// Replace this array with a live fetch from your Stellar RPC endpoint.
-// Each object mirrors the on-chain `Proposal` struct.
+// ── State ─────────────────────────────────────────────────────────────────────
 
-const now = Math.floor(Date.now() / 1000);
+/** @type {Array<object>} Live proposal data fetched from the backend API. */
+let proposals       = [];
 
-const MOCK_PROPOSALS = [
-  {
-    id: 1,
-    title: 'Increase minimum proposal balance to 500,000 tokens',
-    proposer: 'GBXYZABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOP',
-    votes_yes: 4_200_000,
-    votes_no: 1_100_000,
-    votes_abstain: 300_000,
-    quorum: 5_000_000,
-    start_time: now - 86400,
-    end_time: now + 3600 * 6,
-    state: 'Active',
-    execute_after: 0,
-  },
-  {
-    id: 2,
-    title: 'Enable admin vote restriction on self-created proposals',
-    proposer: 'GCABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRS',
-    votes_yes: 8_500_000,
-    votes_no: 900_000,
-    votes_abstain: 600_000,
-    quorum: 5_000_000,
-    start_time: now - 172800,
-    end_time: now - 3600,
-    state: 'Passed',
-    execute_after: now + 3600 * 24,
-  },
-  {
-    id: 3,
-    title: 'Reduce voting duration maximum from 30 days to 14 days',
-    proposer: 'GDABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRS',
-    votes_yes: 1_200_000,
-    votes_no: 3_800_000,
-    votes_abstain: 200_000,
-    quorum: 5_000_000,
-    start_time: now - 259200,
-    end_time: now - 86400,
-    state: 'Rejected',
-    execute_after: 0,
-  },
-  {
-    id: 4,
-    title: 'Deploy governance contract upgrade v1.1.0',
-    proposer: 'GEABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRS',
-    votes_yes: 9_100_000,
-    votes_no: 400_000,
-    votes_abstain: 100_000,
-    quorum: 5_000_000,
-    start_time: now - 604800,
-    end_time: now - 518400,
-    state: 'Executed',
-    execute_after: 0,
-  },
-  {
-    id: 5,
-    title: 'Add delegation support to governance contract',
-    proposer: 'GFABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRS',
-    votes_yes: 500_000,
-    votes_no: 200_000,
-    votes_abstain: 50_000,
-    quorum: 5_000_000,
-    start_time: now - 3600,
-    end_time: now + 3600 * 47,
-    state: 'Active',
-    execute_after: 0,
-  },
-  {
-    id: 6,
-    title: 'Cancel emergency proposal — superseded by proposal #7',
-    proposer: 'GGABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRS',
-    votes_yes: 0,
-    votes_no: 0,
-    votes_abstain: 0,
-    quorum: 5_000_000,
-    start_time: now - 7200,
-    end_time: now + 86400,
-    state: 'Cancelled',
-    execute_after: 0,
-  },
-  {
-    id: 7,
-    title: 'Set proposal cooldown period to 24 hours',
-    proposer: 'GHABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRS',
-    votes_yes: 2_100_000,
-    votes_no: 800_000,
-    votes_abstain: 400_000,
-    quorum: 5_000_000,
-    start_time: now - 43200,
-    end_time: now + 3600 * 30,
-    state: 'Active',
-    execute_after: 0,
-  },
-  {
-    id: 8,
-    title: 'Update treasury multisig signers',
-    proposer: 'GIABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRS',
-    votes_yes: 7_200_000,
-    votes_no: 1_300_000,
-    votes_abstain: 500_000,
-    quorum: 5_000_000,
-    start_time: now - 345600,
-    end_time: now - 259200,
-    state: 'Passed',
-    execute_after: now - 172800,
-  },
-  {
-    id: 9,
-    title: 'Increase quorum threshold to 10% of total supply',
-    proposer: 'GJABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRS',
-    votes_yes: 3_000_000,
-    votes_no: 3_100_000,
-    votes_abstain: 900_000,
-    quorum: 5_000_000,
-    start_time: now - 432000,
-    end_time: now - 345600,
-    state: 'Rejected',
-    execute_after: 0,
-  },
-  {
-    id: 10,
-    title: 'Enable on-chain timelock for all passed proposals',
-    proposer: 'GKABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRS',
-    votes_yes: 6_800_000,
-    votes_no: 700_000,
-    votes_abstain: 200_000,
-    quorum: 5_000_000,
-    start_time: now - 1209600,
-    end_time: now - 1123200,
-    state: 'Executed',
-    execute_after: 0,
-  },
-  {
-    id: 11,
-    title: 'Whitelist new token contract address for governance voting',
-    proposer: 'GLABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRS',
-    votes_yes: 1_500_000,
-    votes_no: 500_000,
-    votes_abstain: 200_000,
-    quorum: 5_000_000,
-    start_time: now - 1800,
-    end_time: now + 3600 * 71,
-    state: 'Active',
-    execute_after: 0,
-  },
-  {
-    id: 12,
-    title: 'Reduce maximum title length from 256 to 128 characters',
-    proposer: 'GMABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRS',
-    votes_yes: 4_400_000,
-    votes_no: 2_200_000,
-    votes_abstain: 800_000,
-    quorum: 5_000_000,
-    start_time: now - 518400,
-    end_time: now - 432000,
-    state: 'Passed',
-    execute_after: now + 3600 * 12,
-  },
-];
-
-// ── State ────────────────────────────────────────────────────────────────────
-
-let currentPage   = 1;
-let activeFilter  = 'all';
-let searchQuery   = '';
+let currentPage     = 1;
+let activeFilter    = 'all';
+let searchQuery     = '';
 let countdownTimers = [];
+let refreshTimer    = null;
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── API fetch ─────────────────────────────────────────────────────────────────
+
+/**
+ * Fetch all proposals from the backend GET /api/proposals endpoint.
+ * Handles loading state, error state, and pagination from on-chain count.
+ *
+ * @returns {Promise<void>}
+ */
+async function fetchProposals() {
+  const list       = document.getElementById('proposal-list');
+  const errorState = document.getElementById('error-state');
+  const skeleton   = document.getElementById('skeleton-state');
+
+  // Show skeleton loader while fetching
+  if (skeleton) skeleton.hidden = false;
+  if (list)     list.hidden     = true;
+  if (errorState) errorState.hidden = true;
+
+  try {
+    const response = await fetch(API_ENDPOINT, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' },
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+
+    // Accept either a plain array or { proposals: [...], total: N }
+    proposals = Array.isArray(data) ? data : (data.proposals ?? []);
+
+    // Reset to page 1 on fresh load so we don't land on a now-empty page
+    currentPage = 1;
+    if (skeleton) skeleton.hidden = true;
+    if (list)     list.hidden     = false;
+
+    render();
+    scheduleAutoRefresh();
+  } catch (err) {
+    console.error('[VoteChain] fetchProposals error:', err);
+
+    if (skeleton)   skeleton.hidden   = true;
+    if (list)       list.hidden       = true;
+    if (errorState) {
+      errorState.hidden = false;
+      const msg = errorState.querySelector('#error-message');
+      if (msg) msg.textContent = `Could not load proposals: ${err.message}`;
+    }
+  }
+}
+
+// ── Auto-refresh ──────────────────────────────────────────────────────────────
+
+/**
+ * Schedule (or re-schedule) an automatic refresh every REFRESH_INTERVAL ms
+ * if the current page contains any Active proposals.
+ * Clears the timer when no Active proposals are visible.
+ */
+function scheduleAutoRefresh() {
+  clearTimeout(refreshTimer);
+  refreshTimer = null;
+
+  const hasActive = proposals.some(p => p.state === 'Active');
+  if (hasActive) {
+    refreshTimer = setTimeout(() => {
+      fetchProposals();
+    }, REFRESH_INTERVAL);
+  }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 /**
  * Format a large number with locale-aware thousands separators.
@@ -251,10 +166,10 @@ function badgeClass(state) {
   return `badge-${state.toLowerCase()}`;
 }
 
-// ── Filtering ────────────────────────────────────────────────────────────────
+// ── Filtering ─────────────────────────────────────────────────────────────────
 
 function filteredProposals() {
-  return MOCK_PROPOSALS.filter(p => {
+  return proposals.filter(p => {
     const matchesFilter = activeFilter === 'all' || p.state.toLowerCase() === activeFilter;
     const q = searchQuery.toLowerCase();
     const matchesSearch = !q
@@ -265,7 +180,7 @@ function filteredProposals() {
   });
 }
 
-// ── Rendering ────────────────────────────────────────────────────────────────
+// ── Rendering ─────────────────────────────────────────────────────────────────
 
 /**
  * Build the HTML for a single proposal card.
@@ -278,8 +193,8 @@ function renderCard(p) {
   const noP   = total > 0 ? (p.votes_no      / total * 100).toFixed(1) : 0;
   const absP  = total > 0 ? (p.votes_abstain / total * 100).toFixed(1) : 0;
 
-  const isActive = p.state === 'Active';
-  const secs     = isActive ? secondsUntil(p.end_time) : 0;
+  const isActive   = p.state === 'Active';
+  const secs       = isActive ? secondsUntil(p.end_time) : 0;
   const endingSoon = isActive && isEndingSoon(secs);
 
   const countdownHtml = isActive ? `
@@ -295,7 +210,7 @@ function renderCard(p) {
   const quorumPct = p.quorum > 0 ? Math.min(100, (total / p.quorum * 100)).toFixed(0) : 0;
 
   return `
-    <li class="proposal-card" role="article" aria-label="Proposal ${p.id}: ${p.title}">
+    <li class="proposal-card" role="article" aria-label="Proposal ${p.id}: ${escapeHtml(p.title)}">
       <div class="card-header">
         <div class="card-title-row">
           <div class="proposal-id" aria-label="Proposal ID">#${p.id}</div>
@@ -355,7 +270,7 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
-// ── Countdown tick ────────────────────────────────────────────────────────────
+// ── Countdown tick ─────────────────────────────────────────────────────────────
 
 function tickCountdowns() {
   document.querySelectorAll('.countdown[data-end]').forEach(el => {
@@ -372,18 +287,18 @@ function tickCountdowns() {
   });
 }
 
-// ── Render page ───────────────────────────────────────────────────────────────
+// ── Render page ────────────────────────────────────────────────────────────────
 
 function render() {
   // Clear existing countdown intervals
   countdownTimers.forEach(clearInterval);
   countdownTimers = [];
 
-  const list      = document.getElementById('proposal-list');
+  const list       = document.getElementById('proposal-list');
   const emptyState = document.getElementById('empty-state');
-  const prevBtn   = document.getElementById('prev-btn');
-  const nextBtn   = document.getElementById('next-btn');
-  const pageInfo  = document.getElementById('page-info');
+  const prevBtn    = document.getElementById('prev-btn');
+  const nextBtn    = document.getElementById('next-btn');
+  const pageInfo   = document.getElementById('page-info');
   const liveRegion = document.getElementById('live-region');
 
   const filtered   = filteredProposals();
@@ -417,11 +332,17 @@ function render() {
   }
 }
 
-// ── Event listeners ───────────────────────────────────────────────────────────
+// ── Event listeners ────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
   // Filter buttons
   document.querySelectorAll('.filter-btn').forEach(btn => {
+    // Set correct initial aria-pressed state so screen readers know which
+    // filter is active on page load (fixes issue #14).
+    const isInitiallyActive = btn.dataset.filter === activeFilter;
+    btn.classList.toggle('active', isInitiallyActive);
+    btn.setAttribute('aria-pressed', String(isInitiallyActive));
+
     btn.addEventListener('click', () => {
       activeFilter = btn.dataset.filter;
       currentPage  = 1;
@@ -434,6 +355,14 @@ document.addEventListener('DOMContentLoaded', () => {
       });
 
       render();
+    });
+
+    // Support keyboard activation via Enter / Space (issue #14).
+    btn.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        btn.click();
+      }
     });
   });
 
@@ -457,9 +386,15 @@ document.addEventListener('DOMContentLoaded', () => {
     if (currentPage < total) { currentPage++; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
   });
 
-  // ── Theme toggle logic ───────────────────────────────────────────────────────
+  // Retry button in error state
+  const retryBtn = document.getElementById('retry-btn');
+  if (retryBtn) {
+    retryBtn.addEventListener('click', () => fetchProposals());
+  }
+
+  // ── Theme toggle ─────────────────────────────────────────────────────────────
   const themeToggle = document.getElementById('theme-toggle');
-  
+
   function updateThemeToggleUI(isDark) {
     if (!themeToggle) return;
     themeToggle.setAttribute('aria-label', isDark ? 'Switch to light mode' : 'Switch to dark mode');
@@ -467,14 +402,10 @@ document.addEventListener('DOMContentLoaded', () => {
     themeToggle.innerHTML = isDark
       ? `<svg class="theme-toggle-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
           <circle cx="12" cy="12" r="4"></circle>
-          <path d="M12 2v2"></path>
-          <path d="M12 20v2"></path>
-          <path d="m4.93 4.93 1.41 1.41"></path>
-          <path d="m17.66 17.66 1.41 1.41"></path>
-          <path d="M2 12h2"></path>
-          <path d="M20 12h2"></path>
-          <path d="m6.34 17.66-1.41 1.41"></path>
-          <path d="m19.07 4.93-1.41 1.41"></path>
+          <path d="M12 2v2"></path><path d="M12 20v2"></path>
+          <path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path>
+          <path d="M2 12h2"></path><path d="M20 12h2"></path>
+          <path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path>
         </svg>`
       : `<svg class="theme-toggle-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
           <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
@@ -487,10 +418,9 @@ document.addEventListener('DOMContentLoaded', () => {
       localStorage.setItem('theme', isDark ? 'dark' : 'light');
       updateThemeToggleUI(isDark);
     });
-    // Set initial icon state based on the current class of <html>
     updateThemeToggleUI(document.documentElement.classList.contains('dark'));
   }
 
-  // Initial render
-  render();
+  // Initial data load — replaces the old synchronous render() call
+  fetchProposals();
 });

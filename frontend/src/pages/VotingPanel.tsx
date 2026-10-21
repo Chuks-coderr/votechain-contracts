@@ -1,226 +1,452 @@
-/**
- * VotingPanel page
- *
- * Displays voting controls, quorum progress, and the vote-tally breakdown
- * for a single governance proposal.
- *
- * Mobile-first layout:
- *  - All fixed-width values replaced with fluid / max-width alternatives.
- *  - Vote buttons stack vertically on small viewports (< 480 px) and sit
- *    side-by-side on wider ones.
- *  - Quorum progress bar scales correctly at every breakpoint.
- *  - Minimum tested viewport: 320 px.
- */
+// Copyright 2024 VoteChain Contributors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-import React, { useState } from 'react';
-import type { Proposal, VoteRecord } from '../types';
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { TransactionToast } from "../components/TransactionToast";
+import { VoteConfirmationDialog, VoteChoice } from "../components/VoteConfirmationDialog";
+import { useTransactionStatus } from "../hooks/useTransactionStatus";
+import { useWallet } from "../context/WalletContext";
+import type { RawProposal } from "../types";
 
 // ---------------------------------------------------------------------------
-// Demo / stub data — replace with real contract call
+// Types
 // ---------------------------------------------------------------------------
-const STUB_PROPOSAL: Proposal = {
-  id: '1',
-  title: 'Increase minimum proposal balance to 500,000 tokens',
-  description:
-    'This proposal raises the minimum token balance required to submit a new governance proposal from 100,000 to 500,000 VCH, reducing spam and ensuring proposers have meaningful stake.',
-  state: 'Active',
-  createdAt: '2026-10-10',
-  endAt: '2026-10-25',
-  votesCount: 142,
-  totalWeight: 5_600_000,
-  votes: [
-    { address: 'GBXYZ...MNOP', type: 'For',     weight: 4_200_000, votedAt: '2026-10-11' },
-    { address: 'GCABC...PQRS', type: 'Against', weight: 1_100_000, votedAt: '2026-10-12' },
-    { address: 'GDABC...PQRS', type: 'Abstain', weight:   300_000, votedAt: '2026-10-13' },
-  ],
+
+interface VotedSet {
+  [proposalId: number]: VoteChoice;
+}
+
+// ---------------------------------------------------------------------------
+// Freighter signing helper
+// ---------------------------------------------------------------------------
+
+type FreighterApi = {
+  isConnected: () => Promise<boolean>;
+  getPublicKey: () => Promise<string>;
+  getNetwork: () => Promise<string>;
+  requestAccess: () => Promise<void>;
+  signTransaction: (xdr: string, opts?: { network?: string }) => Promise<string>;
 };
+
+function getFreighter(): FreighterApi | undefined {
+  return (window as unknown as Record<string, unknown>).freighter as
+    | FreighterApi
+    | undefined;
+}
+
+/**
+ * Build a minimal cast_vote XDR and sign it with Freighter.
+ * In a production app this would call the Stellar SDK to build a real
+ * contract invocation XDR. Here we produce a deterministic placeholder
+ * that encodes the vote intent so the rest of the UI flow works end-to-end.
+ *
+ * Returns the signed XDR hash (transaction hash after submission).
+ */
+async function castVoteViaFreighter(
+  proposalId: number,
+  choice: VoteChoice,
+  network: string
+): Promise<string> {
+  const freighter = getFreighter();
+  if (!freighter) throw new Error("Freighter extension not found.");
+
+  // Encode a placeholder XDR representing the cast_vote call.
+  // Replace this with real Stellar SDK XDR construction before mainnet.
+  const payload = btoa(
+    JSON.stringify({ fn: "cast_vote", proposal_id: proposalId, vote: choice })
+  );
+
+  const signedXdr = await freighter.signTransaction(payload, { network });
+
+  // After signing, submit to Stellar RPC and return the transaction hash.
+  // In production: submit signedXdr via Horizon/Soroban RPC and return the real hash.
+  // For now we derive a deterministic mock hash from the signed XDR.
+  const encoder = new TextEncoder();
+  const data = encoder.encode(signedXdr);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// ---------------------------------------------------------------------------
+// Utility helpers
+// ---------------------------------------------------------------------------
+
+function secondsUntil(endTime: number): number {
+  return Math.max(0, endTime - Math.floor(Date.now() / 1000));
+}
+
+function formatDuration(secs: number): string {
+  if (secs <= 0) return "Ended";
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  if (d > 0) return `${d}d ${h}h remaining`;
+  if (h > 0) return `${h}h ${m}m remaining`;
+  if (m > 0) return `${m}m ${s}s remaining`;
+  return `${s}s remaining`;
+}
+
+function fmt(n: number): string {
+  return n.toLocaleString();
+}
 
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
 
-interface QuorumBarProps {
-  totalWeight: number;
-  quorumTarget: number;
+function QuorumBar({ total, quorum }: { total: number; quorum: number }) {
+  const pct = quorum > 0 ? Math.min(100, (total / quorum) * 100) : 0;
+  const met = total >= quorum;
+  return (
+    <div className="quorum-wrap" aria-label={`Quorum ${pct.toFixed(0)}% of ${fmt(quorum)} required${met ? ", met" : ", not yet met"}`}>
+      <div
+        className="quorum-bar-track"
+        role="progressbar"
+        aria-valuenow={Math.round(pct)}
+        aria-valuemin={0}
+        aria-valuemax={100}
+      >
+        <div
+          className={`quorum-bar-fill${met ? " quorum-bar-fill--met" : ""}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <span className="quorum-label">
+        Quorum {pct.toFixed(0)}%{met ? " ✓" : ""}
+      </span>
+    </div>
+  );
+}
+
+interface VoteTalliesProps {
   yes: number;
   no: number;
   abstain: number;
 }
 
-function QuorumBar({ totalWeight, quorumTarget, yes, no, abstain }: QuorumBarProps) {
-  const pct = (n: number) => Math.min(100, (n / quorumTarget) * 100).toFixed(1);
-  const reached = totalWeight >= quorumTarget;
+function VoteTallies({ yes, no, abstain }: VoteTalliesProps) {
+  const total = yes + no + abstain;
+  const yesP = total > 0 ? ((yes / total) * 100).toFixed(1) : "0.0";
+  const noP = total > 0 ? ((no / total) * 100).toFixed(1) : "0.0";
+  const absP = total > 0 ? ((abstain / total) * 100).toFixed(1) : "0.0";
 
   return (
-    <div className="vp-quorum" aria-label="Quorum progress">
-      <div className="vp-quorum-header">
-        <span className="vp-quorum-label">Quorum progress</span>
-        <span className={`vp-quorum-status ${reached ? 'vp-quorum-reached' : 'vp-quorum-pending'}`}>
-          {reached ? '✓ Quorum reached' : `${((totalWeight / quorumTarget) * 100).toFixed(0)}% of quorum`}
+    <div className="vote-summary" aria-label="Vote summary">
+      <div
+        className="vote-bar-wrap"
+        role="img"
+        aria-label={`Yes ${yesP}%, No ${noP}%, Abstain ${absP}%`}
+      >
+        <div className="vote-bar-yes" style={{ width: `${yesP}%` }} />
+        <div className="vote-bar-no" style={{ width: `${noP}%` }} />
+        <div className="vote-bar-abstain" style={{ width: `${absP}%` }} />
+      </div>
+      <div className="vote-counts">
+        <span className="vote-count-item">
+          <span className="vote-dot dot-yes" aria-hidden="true" />
+          Yes <strong>{fmt(yes)}</strong>
+        </span>
+        <span className="vote-count-item">
+          <span className="vote-dot dot-no" aria-hidden="true" />
+          No <strong>{fmt(no)}</strong>
+        </span>
+        <span className="vote-count-item">
+          <span className="vote-dot dot-abstain" aria-hidden="true" />
+          Abstain <strong>{fmt(abstain)}</strong>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+interface ProposalCardProps {
+  proposal: RawProposal;
+  voted: VoteChoice | undefined;
+  onVote: (choice: VoteChoice) => void;
+  submitting: boolean;
+}
+
+function ProposalCard({ proposal, voted, onVote, submitting }: ProposalCardProps) {
+  const secs = secondsUntil(proposal.end_time);
+  const endingSoon = secs > 0 && secs < 3600;
+
+  return (
+    <article
+      className="proposal-card"
+      aria-label={`Proposal ${proposal.id}: ${proposal.title}`}
+    >
+      <header className="card-header">
+        <div className="card-title-row">
+          <span className="proposal-id" aria-label="Proposal ID">
+            #{proposal.id}
+          </span>
+          <h3 className="proposal-title">{proposal.title}</h3>
+        </div>
+        <span
+          className="state-badge badge-active"
+          role="status"
+          aria-label="Status: Active"
+        >
+          Active
+        </span>
+      </header>
+
+      <VoteTallies
+        yes={proposal.votes_yes}
+        no={proposal.votes_no}
+        abstain={proposal.votes_abstain}
+      />
+
+      <QuorumBar
+        total={proposal.votes_yes + proposal.votes_no + proposal.votes_abstain}
+        quorum={proposal.quorum}
+      />
+
+      <div className="card-footer">
+        <span
+          className={`countdown${endingSoon ? " ending-soon" : ""}`}
+          aria-label={`Time remaining: ${formatDuration(secs)}`}
+        >
+          <svg
+            aria-hidden="true"
+            focusable="false"
+            width="14"
+            height="14"
+            viewBox="0 0 14 14"
+            fill="none"
+          >
+            <circle cx="7" cy="7" r="6" stroke="currentColor" strokeWidth="1.4" />
+            <path
+              d="M7 4v3l2 1.5"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+            />
+          </svg>
+          {formatDuration(secs)}
         </span>
       </div>
 
-      {/* Segmented progress bar */}
-      <div
-        className="vp-bar-track"
-        role="progressbar"
-        aria-valuenow={totalWeight}
-        aria-valuemin={0}
-        aria-valuemax={quorumTarget}
-        aria-label={`${pct(totalWeight)}% of quorum`}
-      >
-        <div className="vp-bar-yes"     style={{ width: `${pct(yes)}%` }}     title={`For: ${yes.toLocaleString()}`} />
-        <div className="vp-bar-no"      style={{ width: `${pct(no)}%` }}      title={`Against: ${no.toLocaleString()}`} />
-        <div className="vp-bar-abstain" style={{ width: `${pct(abstain)}%` }} title={`Abstain: ${abstain.toLocaleString()}`} />
-      </div>
-
-      {/* Legend */}
-      <ul className="vp-tally-list" aria-label="Vote tally">
-        <li className="vp-tally-item">
-          <span className="vp-dot vp-dot-yes" aria-hidden="true" />
-          <span>For</span>
-          <strong>{yes.toLocaleString()}</strong>
-        </li>
-        <li className="vp-tally-item">
-          <span className="vp-dot vp-dot-no" aria-hidden="true" />
-          <span>Against</span>
-          <strong>{no.toLocaleString()}</strong>
-        </li>
-        <li className="vp-tally-item">
-          <span className="vp-dot vp-dot-abstain" aria-hidden="true" />
-          <span>Abstain</span>
-          <strong>{abstain.toLocaleString()}</strong>
-        </li>
-      </ul>
-    </div>
-  );
-}
-
-interface VoteButtonsProps {
-  onVote: (choice: VoteRecord['type']) => void;
-  disabled: boolean;
-  chosen: VoteRecord['type'] | null;
-}
-
-function VoteButtons({ onVote, disabled, chosen }: VoteButtonsProps) {
-  return (
-    <div className="vp-vote-buttons" role="group" aria-label="Cast your vote">
-      {(['For', 'Against', 'Abstain'] as const).map((choice) => (
-        <button
-          key={choice}
-          className={`vp-vote-btn vp-vote-btn-${choice.toLowerCase()}${chosen === choice ? ' vp-vote-btn-selected' : ''}`}
-          onClick={() => onVote(choice)}
-          disabled={disabled}
-          aria-pressed={chosen === choice}
+      {voted ? (
+        <p className="already-voted" aria-live="polite">
+          You voted <strong>{voted}</strong> on this proposal.
+        </p>
+      ) : (
+        <div
+          className="vote-actions"
+          role="group"
+          aria-label={`Vote on proposal ${proposal.id}`}
         >
-          {choice === 'For' && <span aria-hidden="true">👍 </span>}
-          {choice === 'Against' && <span aria-hidden="true">👎 </span>}
-          {choice === 'Abstain' && <span aria-hidden="true">🤐 </span>}
-          {choice}
-        </button>
-      ))}
-    </div>
+          {(["Yes", "No", "Abstain"] as VoteChoice[]).map((choice) => (
+            <button
+              key={choice}
+              type="button"
+              className={`vote-btn vote-btn--${choice.toLowerCase()}`}
+              onClick={() => onVote(choice)}
+              disabled={submitting}
+              aria-label={`Vote ${choice} on proposal ${proposal.id}: ${proposal.title}`}
+            >
+              {choice}
+            </button>
+          ))}
+        </div>
+      )}
+    </article>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Main page
+// Main component
 // ---------------------------------------------------------------------------
 
 export default function VotingPanel() {
-  const proposal = STUB_PROPOSAL;
-  const [chosen, setChosen] = useState<VoteRecord['type'] | null>(null);
-  const [submitted, setSubmitted] = useState(false);
-  const [statusMsg, setStatusMsg] = useState('');
+  const { t } = useTranslation();
+  const { connected, connecting, connect, address, network } = useWallet();
+  const { tx, submit, retry, reset } = useTransactionStatus();
 
-  const yesWeight     = proposal.votes.filter((v) => v.type === 'For').reduce((s, v) => s + v.weight, 0);
-  const noWeight      = proposal.votes.filter((v) => v.type === 'Against').reduce((s, v) => s + v.weight, 0);
-  const abstainWeight = proposal.votes.filter((v) => v.type === 'Abstain').reduce((s, v) => s + v.weight, 0);
-  const QUORUM_TARGET = 5_000_000;
-  const isActive      = proposal.state === 'Active';
+  const [proposals, setProposals] = useState<RawProposal[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
-  function handleVote(choice: VoteRecord['type']) {
-    setChosen(choice);
-    setStatusMsg('');
+  // Track which proposals the user has already voted on this session.
+  const [voted, setVoted] = useState<VotedSet>({});
+
+  // Confirmation dialog state
+  const [pendingProposal, setPendingProposal] = useState<RawProposal | null>(null);
+  const [pendingChoice, setPendingChoice] = useState<VoteChoice | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  // Countdown tick ref
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [, forceUpdate] = useState(0);
+
+  // ── Fetch active proposals ────────────────────────────────────────────────
+
+  const fetchProposals = useCallback(async () => {
+    setLoading(true);
+    setFetchError(null);
+    try {
+      const res = await fetch("/api/proposals", {
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      const data = await res.json();
+      const all: RawProposal[] = Array.isArray(data)
+        ? data
+        : (data.proposals ?? []);
+      setProposals(all.filter((p) => p.state === "Active"));
+    } catch (err: unknown) {
+      setFetchError(
+        (err as { message?: string })?.message ?? "Failed to load proposals."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (connected) fetchProposals();
+  }, [connected, fetchProposals]);
+
+  // ── Countdown ticks ───────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (proposals.length === 0) return;
+    tickRef.current = setInterval(() => forceUpdate((n) => n + 1), 1000);
+    return () => {
+      if (tickRef.current) clearInterval(tickRef.current);
+    };
+  }, [proposals]);
+
+  // ── Vote flow ─────────────────────────────────────────────────────────────
+
+  function openConfirmation(proposal: RawProposal, choice: VoteChoice) {
+    setPendingProposal(proposal);
+    setPendingChoice(choice);
   }
 
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!chosen) return;
-    // TODO: replace with actual Stellar contract invocation
-    setSubmitted(true);
-    setStatusMsg(`Your vote "${chosen}" has been recorded.`);
+  async function confirmVote() {
+    if (!pendingProposal || !pendingChoice || !network) return;
+    setSubmitting(true);
+    setPendingProposal(null);
+    setPendingChoice(null);
+    try {
+      const hash = await castVoteViaFreighter(
+        pendingProposal.id,
+        pendingChoice,
+        network
+      );
+      setVoted((prev) => ({ ...prev, [pendingProposal.id]: pendingChoice }));
+      submit(hash);
+    } catch (err: unknown) {
+      // Surface signing errors through the transaction toast
+      submit("error");
+      console.error("[VotingPanel] castVote error:", err);
+    } finally {
+      setSubmitting(false);
+    }
   }
+
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="vp-container">
-      {/* Proposal header */}
-      <section className="card vp-header-card" aria-labelledby="vp-title">
-        <span className={`status-chip status-${proposal.state.toLowerCase()}`}>{proposal.state}</span>
-        <h1 id="vp-title" className="vp-title">{proposal.title}</h1>
-        <p className="vp-desc">{proposal.description}</p>
-        <dl className="vp-meta">
-          <div>
-            <dt>Proposal ID</dt>
-            <dd>#{proposal.id}</dd>
-          </div>
-          <div>
-            <dt>End date</dt>
-            <dd>{proposal.endAt}</dd>
-          </div>
-          <div>
-            <dt>Total votes</dt>
-            <dd>{proposal.votesCount}</dd>
-          </div>
-        </dl>
-      </section>
+    <section aria-labelledby="voting-panel-title">
+      <h2 id="voting-panel-title">Voting Panel</h2>
 
-      {/* Quorum / tally */}
-      <section className="card" aria-label="Vote tally and quorum">
-        <QuorumBar
-          totalWeight={proposal.totalWeight}
-          quorumTarget={QUORUM_TARGET}
-          yes={yesWeight}
-          no={noWeight}
-          abstain={abstainWeight}
-        />
-      </section>
+      <TransactionToast
+        tx={tx}
+        onRetry={tx.hash ? () => retry(tx.hash!) : undefined}
+        onDismiss={reset}
+      />
 
-      {/* Voting form */}
-      <section className="card" aria-labelledby="vp-vote-heading">
-        <h2 id="vp-vote-heading" className="vp-section-heading">Cast your vote</h2>
-
-        {!isActive && (
-          <p className="vp-inactive-notice" role="alert">
-            This proposal is no longer active. Voting is closed.
-          </p>
-        )}
-
-        {isActive && !submitted && (
-          <form onSubmit={handleSubmit} noValidate>
-            <VoteButtons onVote={handleVote} disabled={submitted} chosen={chosen} />
-            <button
-              type="submit"
-              className="vp-submit-btn"
-              disabled={!chosen}
-              aria-describedby="vp-status"
-            >
-              Confirm vote
-            </button>
-          </form>
-        )}
-
-        {submitted && (
-          <p className="vp-success" role="status">
-            ✅ {statusMsg}
-          </p>
-        )}
-
-        {/* Live region for screen readers */}
-        <div id="vp-status" aria-live="polite" aria-atomic="true" className="visually-hidden">
-          {statusMsg}
+      {/* Wallet not connected */}
+      {!connected && (
+        <div className="wallet-prompt" role="status">
+          <p>Connect your Freighter wallet to browse and vote on active proposals.</p>
+          <button
+            type="button"
+            onClick={connect}
+            disabled={connecting}
+            aria-label="Connect Freighter wallet"
+            className="btn-primary"
+          >
+            {connecting ? "Connecting…" : "Connect Wallet"}
+          </button>
         </div>
-      </section>
-    </div>
+      )}
+
+      {/* Loading */}
+      {connected && loading && (
+        <p aria-busy="true" aria-live="polite">
+          {t("app.loading")}
+        </p>
+      )}
+
+      {/* Fetch error */}
+      {connected && !loading && fetchError && (
+        <div role="alert" className="error-state">
+          <p>{fetchError}</p>
+          <button type="button" onClick={fetchProposals} className="filter-btn">
+            Retry
+          </button>
+        </div>
+      )}
+
+      {/* No active proposals */}
+      {connected && !loading && !fetchError && proposals.length === 0 && (
+        <p role="status">No active proposals found.</p>
+      )}
+
+      {/* Proposal list */}
+      {connected && !loading && proposals.length > 0 && (
+        <ul className="proposal-list" role="list" aria-label="Active proposals">
+          {proposals.map((p) => (
+            <li key={p.id}>
+              <ProposalCard
+                proposal={p}
+                voted={voted[p.id]}
+                onVote={(choice) => openConfirmation(p, choice)}
+                submitting={submitting}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {/* Vote confirmation dialog */}
+      {pendingProposal && pendingChoice && (
+        <VoteConfirmationDialog
+          proposalTitle={pendingProposal.title}
+          choice={pendingChoice}
+          estimatedFee="0.00001 XLM"
+          onConfirm={confirmVote}
+          onCancel={() => {
+            setPendingProposal(null);
+            setPendingChoice(null);
+          }}
+        />
+      )}
+
+      {/* Connected wallet info */}
+      {connected && address && (
+        <p className="wallet-info" aria-label="Connected wallet address">
+          Connected: {address.slice(0, 6)}…{address.slice(-4)}
+        </p>
+      )}
+    </section>
   );
 }
