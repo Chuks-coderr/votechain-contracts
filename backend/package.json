@@ -9,6 +9,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "argon2": "^0.31.2",
     "cors": "^2.8.5",
     "express": "4.22.2",
     "helmet": "^7.1.0",
