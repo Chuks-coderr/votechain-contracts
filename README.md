@@ -1311,6 +1311,18 @@ A reproducible development environment is provided via Docker.
 
 **Prerequisites:** Docker and Docker Compose installed.
 
+Image references in `Dockerfile` and `docker-compose.yml` are pinned to SHA-256
+digests. Dependabot checks Docker images weekly and opens updates when a tag or
+digest changes. To refresh a pin manually, inspect the current registry digest:
+
+```bash
+docker buildx imagetools inspect rust:1.86-slim-bookworm
+```
+
+Copy the top-level `Digest` value and update the matching reference to
+`image:tag@sha256:<digest>`. Use the image's existing tag and verify the Compose
+configuration with `docker compose config` before committing.
+
 ### Start the Full Environment
 
 ```bash
