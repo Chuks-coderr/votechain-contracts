@@ -60,6 +60,16 @@ jobs:
         if: steps.stellar-cli-cache.outputs.cache-hit != 'true'
         run: cargo install --locked stellar-cli@${{ env.STELLAR_CLI_VERSION }}
 
+      - name: Install sqlx CLI
+        run: cargo install sqlx-cli --no-default-features --features postgres --locked
+
+      - name: Check database migrations before deployment
+        env:
+          DATABASE_URL: ${{ secrets.INDEXER_DATABASE_URL }}
+        run: |
+          chmod +x scripts/check-db-migrations.sh
+          ./scripts/check-db-migrations.sh
+
       - name: Deploy to staging
         id: deploy
         env:
