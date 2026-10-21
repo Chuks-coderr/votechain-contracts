@@ -23,6 +23,7 @@ import { rateLimit } from "./middleware/rateLimit";
 import healthRoutes from "./routes/health";
 import proposalRoutes from "./routes/proposals";
 import apiKeysRoutes from "./routes/apiKeys";
+import cspReportRoutes from "./routes/cspReport";
 import {
   notFoundHandler,
   globalErrorHandler,
@@ -127,6 +128,10 @@ app.use(express.json());
 // credentials.
 app.get("/metrics", metricsHandler);
 app.use("/", healthRoutes);
+
+// CSP violation reports forwarded by Nginx (SEC-012) — mounted before auth
+// since the browser-originated report never carries an API key.
+app.use("/", cspReportRoutes);
 
 // ── API key authentication & tiered rate limiting ──────────────────────────
 //
