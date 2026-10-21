@@ -21,5 +21,14 @@ path = "fuzz_targets/fuzz_cast_vote.rs"
 name = "fuzz_finalise"
 path = "fuzz_targets/fuzz_finalise.rs"
 
+# Token arithmetic fuzz harnesses — closes #249
+[[bin]]
+name = "fuzz_token_transfer"
+path = "fuzz_targets/fuzz_token_transfer.rs"
+
+[[bin]]
+name = "fuzz_token_transfer_from"
+path = "fuzz_targets/fuzz_token_transfer_from.rs"
+
 [lib]
 path = "lib.rs"
