@@ -1352,6 +1352,186 @@ fn test_create_proposal_after_cooldown_accepted() {
     assert_eq!(client.get_proposal(&id2).state, ProposalState::Active);
 }
 
+#[test]
+fn test_create_proposal_zero_cooldown_disabled_allows_immediate_second() {
+    // #307: cooldown = 0 means the feature is disabled entirely, so a second
+    // proposal by the same proposer must be allowed in the same block/timestamp.
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = new_client(&env);
+    let admin = Address::generate(&env);
+    let token_id = setup_token(&env, &admin);
+    client.initialize(
+        &admin,
+        &token_id,
+        &0_i128,
+        &3600_u64,
+        &60_u64,
+        &2_592_000_u64,
+        &false,
+        &0_u64,
+        &0_u64, // proposal_cooldown = 0 (disabled)
+    );
+
+    let proposer = Address::generate(&env);
+    let id1 = client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "First"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &7200,
+    );
+    // No timestamp advance at all — second proposal must still succeed because
+    // cooldown enforcement is bypassed when cooldown == 0.
+    let id2 = client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "Second"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &3600,
+    );
+    assert_ne!(id1, id2);
+    assert_eq!(client.get_proposal(&id1).state, ProposalState::Active);
+    assert_eq!(client.get_proposal(&id2).state, ProposalState::Active);
+}
+
+#[test]
+fn test_create_proposal_exactly_at_cooldown_boundary_accepted() {
+    // #307: `now < last + cooldown` is the revert condition, so `now == last +
+    // cooldown` (exactly at the boundary) must succeed, not revert.
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = new_client(&env);
+    let admin = Address::generate(&env);
+    let token_id = setup_token(&env, &admin);
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    client.initialize(
+        &admin,
+        &token_id,
+        &0_i128,
+        &3600_u64,
+        &60_u64,
+        &2_592_000_u64,
+        &false,
+        &0_u64,
+        &3600_u64, // 1 hour cooldown
+    );
+
+    let proposer = Address::generate(&env);
+    client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "First"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &7200,
+    );
+    // Advance exactly `cooldown` seconds — now == last + cooldown.
+    env.ledger().with_mut(|l| l.timestamp += 3600);
+    let id2 = client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "Second"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &3600,
+    );
+    assert_eq!(client.get_proposal(&id2).state, ProposalState::Active);
+}
+
+#[test]
+#[should_panic]
+fn test_create_proposal_one_second_before_boundary_reverts() {
+    // #307: complements the exact-boundary test above by confirming
+    // `now == last + cooldown - 1` is still inside the cooldown window.
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = new_client(&env);
+    let admin = Address::generate(&env);
+    let token_id = setup_token(&env, &admin);
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    client.initialize(
+        &admin,
+        &token_id,
+        &0_i128,
+        &3600_u64,
+        &60_u64,
+        &2_592_000_u64,
+        &false,
+        &0_u64,
+        &3600_u64,
+    );
+
+    let proposer = Address::generate(&env);
+    client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "First"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &7200,
+    );
+    env.ledger().with_mut(|l| l.timestamp += 3599);
+    client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "Spam"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &3600,
+    );
+}
+
+#[test]
+fn test_create_proposal_cooldown_resets_after_successful_second_proposal() {
+    // #307: after a successful second proposal, the cooldown timer must reset
+    // against the NEW proposal's timestamp, so a third attempt immediately
+    // after the second must also revert (cooldown re-armed, not one-shot).
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = new_client(&env);
+    let admin = Address::generate(&env);
+    let token_id = setup_token(&env, &admin);
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    client.initialize(
+        &admin,
+        &token_id,
+        &0_i128,
+        &3600_u64,
+        &60_u64,
+        &2_592_000_u64,
+        &false,
+        &0_u64,
+        &3600_u64,
+    );
+
+    let proposer = Address::generate(&env);
+    client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "First"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &7200,
+    );
+    // Advance past cooldown and submit a second (successful) proposal.
+    env.ledger().with_mut(|l| l.timestamp += 3601);
+    let id2 = client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "Second"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &3600,
+    );
+    assert_eq!(client.get_proposal(&id2).state, ProposalState::Active);
+
+    // Immediately try a third proposal — the cooldown must have reset against
+    // the second proposal's timestamp, so this must revert.
+    let result = client.try_create_proposal(
+        &proposer,
+        &String::from_str(&env, "Third"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &3600,
+    );
+    assert!(result.is_err());
+}
+
 // ── end spam prevention tests ─────────────────────────────────────────────────
 
 // ── SC-023: get_vote tests ────────────────────────────────────────────────────
