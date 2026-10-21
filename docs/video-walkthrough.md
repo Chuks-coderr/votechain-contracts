@@ -241,9 +241,20 @@ This document serves as the permanent transcript for the video.  If you find any
 discrepancy between the video narration and the transcript, please open an issue
 so we can keep them in sync.
 
-Subtitle (`.srt` / `.vtt`) files will be added to the YouTube video once it is
-uploaded.  Requests for alternative formats (audio description, large-print
-transcript, etc.) can be made via a GitHub issue.
+Captions files are stored alongside this document:
+
+| Format | File | Use |
+|--------|------|-----|
+| WebVTT | [`docs/media/votechain-contributor-walkthrough.vtt`](media/votechain-contributor-walkthrough.vtt) | HTML `<track>` element, YouTube, most modern video players |
+| SubRip | [`docs/media/votechain-contributor-walkthrough.srt`](media/votechain-contributor-walkthrough.srt) | VLC, legacy players, Kdenlive, DaVinci Resolve |
+
+When the video is uploaded to YouTube:
+1. Go to **YouTube Studio → Subtitles → Add language → English**.
+2. Choose **Upload file → With timing** and upload the `.vtt` file.
+3. Review the auto-matched timings and correct any drift before publishing.
+
+Requests for alternative formats (audio description, large-print transcript,
+translated captions, etc.) can be made via a GitHub issue.
 
 ---
 
