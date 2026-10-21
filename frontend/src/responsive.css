@@ -1,0 +1,175 @@
+/* ============================================================
+   VoteChain — Mobile-Responsive Styles  (issue #12)
+   Targets: ≤ 600 px, ≤ 414 px, 768 px, and 1440 px viewports.
+   Complements the existing styles.css; import after it.
+   ============================================================ */
+
+/* ── Hamburger button (hidden on desktop) ─────────────────── */
+.hamburger-btn {
+  display: none;               /* hidden on desktop */
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 5px;
+  width: 44px;                 /* WCAG 2.5.5 — 44 × 44 px minimum touch target */
+  height: 44px;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+.hamburger-btn:hover {
+  background: var(--color-surface-2);
+  border-color: var(--color-primary);
+}
+.hamburger-bar {
+  display: block;
+  width: 18px;
+  height: 2px;
+  background: var(--color-text);
+  border-radius: 2px;
+  transition: transform 0.2s, opacity 0.2s;
+}
+
+/* Desktop navigation visible by default */
+.desktop-nav { display: block; }
+
+/* Mobile nav drawer — hidden by default */
+.mobile-nav {
+  display: none;
+  overflow: hidden;
+  max-height: 0;
+  transition: max-height 0.25s ease;
+}
+.mobile-nav--open {
+  display: block;
+  max-height: 300px;
+  padding-bottom: 1rem;
+}
+.mobile-nav-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.mobile-nav-list a {
+  display: block;
+  padding: 0.75rem 0;
+  color: var(--color-text);
+  text-decoration: none;
+  font-size: 1rem;
+  font-weight: 500;
+  border-bottom: 1px solid var(--color-border);
+  transition: color 0.15s;
+}
+.mobile-nav-list a:hover { color: var(--color-primary); }
+
+/* ── Proposal cards — stack vertically on mobile ─────────── */
+@media (max-width: 600px) {
+  /* Show hamburger, hide desktop nav */
+  .hamburger-btn   { display: flex; }
+  .desktop-nav     { display: none; }
+
+  /* Card layout */
+  .proposal-card {
+    padding: 1rem;
+  }
+  .card-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+  .state-badge { align-self: flex-start; }
+
+  /* Vote bar text legibility */
+  .vote-counts {
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .vote-count-item {
+    font-size: 0.85rem;   /* slightly larger for narrow viewports */
+  }
+
+  /* Pagination — 44 × 44 px touch targets */
+  .pagination { gap: 0.5rem; flex-wrap: wrap; justify-content: center; }
+  .page-btn {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.875rem;
+  }
+
+  /* Toolbar filters wrap gracefully */
+  .toolbar { flex-direction: column; align-items: stretch; }
+  .filter-wrap { flex-wrap: wrap; }
+  .filter-btn {
+    min-height: 44px;         /* touch-friendly */
+    padding: 0.5rem 1rem;
+  }
+
+  /* Proposer address truncation */
+  .proposer-address { max-width: 110px; }
+
+  /* Card footer stacks */
+  .card-footer { flex-direction: column; align-items: flex-start; gap: 0.4rem; }
+
+  /* Page heading */
+  .page-heading h1 { font-size: 1.35rem; }
+}
+
+/* ── Extra-narrow (iPhone SE / 375 px) ───────────────────── */
+@media (max-width: 390px) {
+  .header-inner { height: 56px; }
+  .proposal-card { padding: 0.85rem; }
+  .proposal-title { font-size: 0.95rem; }
+  .vote-count-item { font-size: 0.8rem; }
+  .page-btn { min-width: 44px; font-size: 0.8rem; }
+}
+
+/* ── Tablet (768 px) ──────────────────────────────────────── */
+@media (min-width: 601px) and (max-width: 900px) {
+  .container { max-width: 100%; padding: 0 1.5rem; }
+  .card-header { flex-wrap: wrap; }
+  .vote-counts { gap: 1rem; }
+  /* Pagination touch targets remain accessible */
+  .page-btn { min-height: 40px; }
+}
+
+/* ── Large desktop (1440 px) ─────────────────────────────── */
+@media (min-width: 1280px) {
+  .container { max-width: 1100px; }
+  .proposal-list { gap: 1.25rem; }
+}
+
+/* ── GovernanceDashboard chart fluid resize ───────────────── */
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.5rem;
+}
+.dashboard-chart-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 1.25rem;
+  overflow: hidden;         /* prevent SVG overflow on narrow viewports */
+}
+/* Make SVG charts scale to container width */
+.dashboard-chart-card svg {
+  max-width: 100%;
+  height: auto;
+}
+
+@media (max-width: 600px) {
+  .dashboard-grid { grid-template-columns: 1fr; }
+  .dashboard-chart-card { padding: 1rem; }
+}
+
+/* ── Reduced motion (keep existing rule consistent) ──────── */
+@media (prefers-reduced-motion: reduce) {
+  .mobile-nav,
+  .hamburger-bar { transition: none !important; }
+}

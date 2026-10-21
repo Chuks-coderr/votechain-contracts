@@ -1,0 +1,107 @@
+name: Deploy to Staging
+
+# ── Trigger ──────────────────────────────────────────────────────────────────
+# Runs on every merge (push) to `develop`, so staging always tracks the
+# integration branch ahead of a mainnet release. (#67)
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'contracts/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'config/staging.toml'
+      - 'scripts/deploy.sh'
+      - 'scripts/deploy_staging.sh'
+      - 'scripts/smoke_test_staging.sh'
+      - '.github/workflows/deploy-staging.yml'
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  STELLAR_CLI_VERSION: "22.8.2"
+
+jobs:
+  deploy:
+    name: Deploy & Smoke Test
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://testnet.stellar.expert
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-staging-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-staging-
+            ${{ runner.os }}-cargo-
+
+      - name: Cache Stellar CLI binary
+        id: stellar-cli-cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cargo/bin/stellar
+          key: ${{ runner.os }}-stellar-cli-${{ env.STELLAR_CLI_VERSION }}
+
+      - name: Install Stellar CLI
+        if: steps.stellar-cli-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked stellar-cli@${{ env.STELLAR_CLI_VERSION }}
+
+      - name: Install sqlx CLI
+        run: cargo install sqlx-cli --no-default-features --features postgres --locked
+
+      - name: Check database migrations before deployment
+        env:
+          DATABASE_URL: ${{ secrets.INDEXER_DATABASE_URL }}
+        run: |
+          chmod +x scripts/check-db-migrations.sh
+          ./scripts/check-db-migrations.sh
+
+      - name: Deploy to staging
+        id: deploy
+        env:
+          STELLAR_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+        run: |
+          chmod +x scripts/deploy_staging.sh
+          ./scripts/deploy_staging.sh
+
+      - name: Smoke test staging deployment
+        env:
+          SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org"
+          STELLAR_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+        run: |
+          chmod +x scripts/smoke_test_staging.sh
+          ./scripts/smoke_test_staging.sh
+
+      - name: Upload staging env file
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: staging-deployment-${{ github.run_id }}
+          path: |
+            .env.staging
+            config/staging.toml
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Deployment status
+        if: always()
+        run: |
+          if [[ "${{ job.status }}" == "success" ]]; then
+            echo "✅ Staging deploy + smoke tests passed"
+          else
+            echo "❌ Staging deploy or smoke tests failed — see logs above"
+          fi

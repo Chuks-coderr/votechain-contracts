@@ -1,4 +1,18 @@
 #!/usr/bin/env bash
+# Copyright 2024 VoteChain Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # DO-007: Deploy VoteChain contracts to Stellar mainnet.
 #
 # Usage:
@@ -12,13 +26,16 @@
 #   - --mainnet flag required to prevent accidental deployment
 set -euo pipefail
 
+# shellcheck source=scripts/lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
 # ── Defaults ──────────────────────────────────────────────────────────────────
 MAINNET=false
 DRY_RUN=false
 ENV_FILE=".env.mainnet"
 NETWORK="mainnet"
 RPC_URL="https://horizon.stellar.org"
-NETWORK_PASSPHRASE="Public Global Stellar Network ; September 2015"
+NETWORK_PASSPHRASE="$(get_passphrase "$NETWORK")"
 
 # ── Argument parsing ───────────────────────────────────────────────────────────
 for arg in "$@"; do

@@ -12,24 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::types::{ProposalState, Vote};
-use soroban_sdk::{symbol_short, Address, Env};
+use crate::types::{ConfigKey, ProposalState, Vote};
+use soroban_sdk::{symbol_short, Address, Env, String};
 
 /// # Event Schema
 ///
 /// All events are published via `env.events().publish(topics, data)`.
 /// Topics are a tuple of `(Symbol, ...)` for efficient off-chain filtering.
 ///
-/// | Function      | Topic 0        | Topic 1       | Data                              |
-/// |---------------|----------------|---------------|-----------------------------------|
-/// | initialize    | `"init"`       | —             | `admin: Address`                  |
-/// | create_proposal | `"created"`  | `id: u64`     | `proposer: Address`               |
-/// | cast_vote     | `"vote"`       | `id: u64`     | `(voter, vote, weight)`           |
-/// | finalise      | `"final"`      | `id: u64`     | `state: ProposalState`            |
-/// | execute       | `"executed"`   | `id: u64`     | `()`                              |
-/// | cancel        | `"cancelled"`  | `id: u64`     | `()`                              |
-/// | update_quorum | `"qupdate"`    | `id: u64`     | `new_quorum: i128`                |
+/// | Function      | Topic 0        | Topic 1       | Data                                          |
+/// |---------------|----------------|---------------|-----------------------------------------------|
+/// | initialize    | `"init"`       | —             | `admin: Address`                              |
+/// | create_proposal | `"created"`  | `id: u64`     | `proposer: Address`                           |
+/// | cast_vote     | `"vote"`       | `id: u64`     | `(voter, vote, weight, balance_snapshot)`     |
+/// | finalise      | `"final"`      | `id: u64`     | `state: ProposalState`                        |
+/// | execute       | `"executed"`   | `id: u64`     | `()`                                          |
+/// | cancel        | `"cancelled"`  | `id: u64`     | `()`                                          |
+/// | update_quorum | `"qupdate"`    | `id: u64`     | `new_quorum: i128`                            |
 /// | transfer_admin | `"admxfer"`   | —             | `(old_admin, new_admin): (Address, Address)` |
+/// | extend_voting | `"vextend"`    | `id: u64`     | `(old_end_time, new_end_time): (u64, u64)`   |
+/// | cast_vote (comment) | `"vcomment"` | `id: u64` | `(voter, comment_hash): (Address, String)`   |
 /// Emits an `init` event when the contract is initialised.
 ///
 /// Topics: `("init",)`  
@@ -51,11 +53,11 @@ pub fn proposal_created(env: &Env, id: u64, proposer: &Address) {
 /// Emits a `vote` event when a vote is cast.
 ///
 /// Topics: `("vote", id)`  
-/// Data: `(voter: Address, vote: Vote, weight: i128)`
-pub fn vote_cast(env: &Env, id: u64, voter: &Address, vote: &Vote, weight: i128) {
+/// Data: `(voter: Address, vote: Vote, weight: i128, balance_snapshot: i128)`
+pub fn vote_cast(env: &Env, id: u64, voter: &Address, vote: &Vote, weight: i128, balance_snapshot: i128) {
     env.events().publish(
         (symbol_short!("vote"), id),
-        (voter.clone(), vote.clone(), weight),
+        (voter.clone(), vote.clone(), weight, balance_snapshot),
     );
 }
 
@@ -135,4 +137,78 @@ pub fn contract_paused(env: &Env, admin: &Address) {
 pub fn contract_unpaused(env: &Env, admin: &Address) {
     env.events()
         .publish((symbol_short!("unpaused"),), admin.clone());
+}
+
+/// Emits a `delegset` event when a delegator sets a new delegation.
+///
+/// Topics: `("delegset",)`
+/// Data: `(delegator: Address, delegate: Address)`
+pub fn delegation_set(env: &Env, delegator: &Address, delegate: &Address) {
+    env.events().publish(
+        (symbol_short!("delegated"),),
+        (delegator.clone(), delegate.clone()),
+    );
+    env.events().publish(
+        (symbol_short!("delegset"),),
+        (delegator.clone(), delegate.clone()),
+    );
+}
+
+/// Emits a `delegrevk` event when a delegator revokes their delegation.
+///
+/// Topics: `("delegrevk",)`
+/// Data: `delegator: Address`
+pub fn delegation_revoked(env: &Env, delegator: &Address) {
+    env.events()
+        .publish((symbol_short!("delegrevk"),), delegator.clone());
+}
+
+/// Emits a `paramoveride` event when the admin uses emergency override to change parameters.
+///
+/// Topics: `("paramoveride",)`
+/// Data: `(admin: Address, config_key: ConfigKey, new_value: u64)`
+pub fn admin_parameter_override(env: &Env, admin: &Address, config_key: &ConfigKey, new_value: u64) {
+    env.events().publish(
+        (symbol_short!("paramoveride"),),
+        (admin.clone(), config_key.clone(), new_value),
+    );
+}
+
+/// Emits a `tlupdate` event when the admin updates the timelock duration.
+///
+/// Topics: `("tlupdate",)`
+/// Data: `(admin: Address, old_duration: u64, new_duration: u64)`
+///
+/// Only applies to proposals created after the update — existing proposals retain the
+/// `execute_after` timestamp that was computed when they were finalised.
+pub fn timelock_updated(env: &Env, admin: &Address, old_duration: u64, new_duration: u64) {
+    env.events().publish(
+        (symbol_short!("tlupdate"),),
+        (admin.clone(), old_duration, new_duration),
+    );
+}
+
+/// Emits a `vcomment` event when a voter attaches an off-chain comment hash to their vote.
+///
+/// Topics: `("vcomment", id)`
+/// Data: `(voter: Address, comment_hash: String)`
+///
+/// Indexers/frontends can subscribe to this topic to resolve and display the
+/// linked off-chain comment (e.g. render an IPFS gateway link for the CID).
+pub fn vote_comment_attached(env: &Env, id: u64, voter: &Address, comment_hash: &String) {
+    env.events().publish(
+        (symbol_short!("vcomment"), id),
+        (voter.clone(), comment_hash.clone()),
+    );
+}
+
+/// Emits a `vextend` event when an admin extends a proposal's voting period.
+///
+/// Topics: `("vextend", id)`
+/// Data: `(old_end_time: u64, new_end_time: u64)`
+pub fn voting_extended(env: &Env, id: u64, old_end_time: u64, new_end_time: u64) {
+    env.events().publish(
+        (symbol_short!("vextend"), id),
+        (old_end_time, new_end_time),
+    );
 }

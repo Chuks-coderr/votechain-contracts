@@ -1,0 +1,33 @@
+name: ADR Check
+
+on:
+  pull_request:
+    paths:
+      - "contracts/governance/src/lib.rs"
+
+jobs:
+  adr-warning:
+    name: Warn on large lib.rs change without ADR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for large new functions without a new ADR
+        id: adr_check
+        run: |
+          # Count lines added to lib.rs in this PR
+          ADDED=$(git diff origin/${{ github.base_ref }}...HEAD -- contracts/governance/src/lib.rs \
+            | grep '^+' | grep -v '^+++' | wc -l)
+
+          # Check whether this PR adds any new ADR file
+          NEW_ADRS=$(git diff --name-only --diff-filter=A origin/${{ github.base_ref }}...HEAD \
+            | grep -c '^docs/adr/ADR-' || true)
+
+          echo "Lines added to lib.rs: $ADDED"
+          echo "New ADR files: $NEW_ADRS"
+
+          if [ "$ADDED" -gt 50 ] && [ "$NEW_ADRS" -eq 0 ]; then
+            echo "::warning file=contracts/governance/src/lib.rs::This PR adds more than 50 lines to lib.rs but includes no new ADR. Consider documenting the architectural decision in docs/adr/. See CONTRIBUTING.md for guidance."
+          fi

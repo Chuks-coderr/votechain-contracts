@@ -33,6 +33,26 @@ pub enum ContractError {
     InvalidNewAdmin = 6,
     /// 7 – Address parameter is the zero/default address
     InvalidAddress = 7,
+    /// 8 – Allowance has expired (current ledger sequence > expiry_ledger)
+    AllowanceExpired = 8,
+    /// 9 – expiry_ledger must be >= current ledger sequence
+    InvalidExpiry = 9,
+}
+
+/// Per-allowance record storing both the approved amount and the ledger sequence
+/// number at which the allowance expires (inclusive).
+///
+/// Stored in temporary storage keyed by `TokenDataKey::Allowance(owner, spender)`.
+/// An allowance is valid while `env.ledger().sequence() <= expiry_ledger`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Allowance {
+    /// Maximum tokens the spender may transfer on behalf of the owner.
+    pub amount: i128,
+    /// The ledger sequence number at which this allowance expires (inclusive).
+    /// After this ledger the allowance is treated as zero by `transfer_from`
+    /// and `allowance`.
+    pub expiry_ledger: u32,
 }
 
 /// Storage key enum for the token contract.

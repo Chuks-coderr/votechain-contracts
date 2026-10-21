@@ -167,6 +167,54 @@ tr:nth-child(even) {
   color: #000;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(15 23 42 / 75%);
+  z-index: 1000;
+}
+
+.vote-confirmation-dialog {
+  width: min(100%, 32rem);
+  padding: 1.5rem;
+  background: #111827;
+  border: 1px solid #64748b;
+  border-radius: 0.75rem;
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 35%);
+}
+
+.vote-confirmation-dialog dl {
+  margin: 1rem 0;
+}
+
+.vote-confirmation-dialog dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid #334155;
+}
+
+.vote-confirmation-dialog dt {
+  font-weight: 700;
+}
+
+.vote-confirmation-dialog dd {
+  margin: 0;
+  text-align: right;
+}
+
+.modal-actions,
+.vote-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
 @media (max-width: 720px) {
   .header {
     flex-direction: column;

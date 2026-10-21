@@ -1,5 +1,21 @@
+// Copyright 2024 VoteChain Contributors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import type { Proposal, ProposalState } from '../types';
+import QuorumProgressBar from './QuorumProgressBar';
 
 const sortOptions = [
   { value: 'newest', label: 'Newest' },
@@ -109,13 +125,16 @@ export default function ProposalList({ proposals }: Props) {
               <th scope="col">End date</th>
               <th scope="col">Votes</th>
               <th scope="col">Weight</th>
+              <th scope="col">Quorum</th>
             </tr>
           </thead>
           <tbody>
             {filtered.map((proposal) => (
               <tr key={proposal.id}>
                 <td>{proposal.id}</td>
-                <td>{proposal.title}</td>
+                <td>
+                  <Link to={`/proposals/${proposal.id}`}>{proposal.title}</Link>
+                </td>
                 <td>
                   <span className={statusClass(proposal.state)}>{labelForState(proposal.state)}</span>
                 </td>
@@ -123,11 +142,17 @@ export default function ProposalList({ proposals }: Props) {
                 <td>{proposal.endAt}</td>
                 <td>{proposal.votesCount}</td>
                 <td>{proposal.totalWeight}</td>
+                <td style={{ minWidth: '140px' }}>
+                  <QuorumProgressBar
+                    totalVotes={proposal.totalWeight}
+                    quorum={proposal.quorum}
+                  />
+                </td>
               </tr>
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={7}>No proposals match your search and filter criteria.</td>
+                <td colSpan={8}>No proposals match your search and filter criteria.</td>
               </tr>
             )}
           </tbody>

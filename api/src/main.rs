@@ -3,14 +3,10 @@ use std::{net::SocketAddr, sync::Arc};
 use axum::{routing::get, routing::post, Router};
 use tokio::net::TcpListener;
 use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
-
-async fn get_proposals() -> &'static str {
-    "[]"
-}
-
-async fn get_proposal() -> &'static str {
-    "{}"
-}
+use votechain_api::{
+    api::{get_proposal, get_proposal_votes, get_voter_votes, ingest_event, list_proposals, openapi_json, AppState},
+    Indexer,
+};
 
 async fn create_proposal() -> &'static str {
     "{\"status\":\"created\"}"
@@ -44,17 +40,29 @@ async fn main() {
             .unwrap(),
     );
 
+    let shared_state = AppState {
+        indexer: Arc::new(std::sync::RwLock::new(Indexer::new())),
+    };
+
     let read_routes = Router::new()
-        .route("/proposals", get(get_proposals))
+        .route("/proposals", get(list_proposals))
         .route("/proposals/{id}", get(get_proposal))
+        .route("/proposals/{id}/votes", get(get_proposal_votes))
+        // Issue #37: expose voter vote history for the VoteHistory frontend component
+        .route("/voters/{address}/votes", get(get_voter_votes))
+        .route("/openapi.json", get(openapi_json))
         .layer(GovernorLayer::new(read_conf));
 
     let write_routes = Router::new()
         .route("/proposals", post(create_proposal))
         .route("/proposals/{id}/vote", post(cast_vote))
+        .route("/events", post(ingest_event))
         .layer(GovernorLayer::new(write_conf));
 
-    let app = Router::new().merge(read_routes).merge(write_routes);
+    let app = Router::new()
+        .merge(read_routes)
+        .merge(write_routes)
+        .with_state(shared_state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     let listener = TcpListener::bind(addr).await.unwrap();
