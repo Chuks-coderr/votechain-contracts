@@ -251,6 +251,30 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):
 | `security` | Security-related fixes or hardening |
 | `perf` | Performance improvement |
 
+**Breaking changes:**
+
+Append `!` after the type (and optional scope) to flag a breaking change:
+
+```text
+feat!: remove legacy cast_vote_v1 endpoint
+
+refactor(storage)!: rename admin key — existing deployments must re-deploy
+```
+
+For a more detailed explanation, add a `BREAKING CHANGE:` footer in the
+commit body:
+
+```text
+feat!: change vote weight precision from i64 to i128
+
+BREAKING CHANGE: stored vote weights are now i128. Any off-chain tooling
+that reads raw ledger storage must be updated before upgrading.
+```
+
+Both forms are detected by the automated `changelog.yml` workflow and
+surfaced under a prominent **⚠️ BREAKING CHANGES** heading in the
+generated `CHANGELOG.md` entry.
+
 **Examples:**
 
 ```text
@@ -263,6 +287,13 @@ test: add quorum boundary edge cases to prop_tests
 chore: upgrade soroban-sdk to 22.1.0
 
 docs(lifecycle): clarify abstain vote quorum behaviour
+
+feat!: remove deprecated cast_vote_v1 — use cast_vote_v2
+
+feat(token)!: change balance type to i128
+
+BREAKING CHANGE: i64 balances are no longer accepted; migrate
+existing token balances before deploying this version.
 ```
 
 **Rules:**
@@ -270,6 +301,27 @@ docs(lifecycle): clarify abstain vote quorum behaviour
 - Summary line ≤ 72 characters, lower case, no trailing period.
 - Use the imperative mood: "add", "fix", "remove" — not "added" or "fixes".
 - Reference the relevant issue in the body when applicable: `Closes #52`.
+- Always use `!` and/or a `BREAKING CHANGE:` footer for any commit that
+  changes a public interface, storage layout, or event schema in a way
+  that requires action from deployers or consumers.
+
+**Automated CHANGELOG generation:**
+
+On every version tag push (`v*.*.*`) the `changelog.yml` GitHub Actions
+workflow:
+
+1. Collects all conventional commits since the previous tag.
+2. Categorises them into Added / Changed / Removed / Fixed / Security
+   sections based on commit type.
+3. Highlights breaking changes under a `⚠️ BREAKING CHANGES` heading.
+4. Opens a pull request that updates `CHANGELOG.md` and auto-merges
+   once required checks pass.
+
+This means **you do not need to manually edit `CHANGELOG.md`** for a
+release — just write conventional commits and push a version tag.  The
+only manual entry required is updating the `[Unreleased]` section for
+user-visible changes while a feature is in development (as noted in the
+PR checklist).
 
 ---
 
