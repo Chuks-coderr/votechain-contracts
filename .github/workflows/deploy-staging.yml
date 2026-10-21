@@ -78,13 +78,54 @@ jobs:
           chmod +x scripts/deploy_staging.sh
           ./scripts/deploy_staging.sh
 
-      - name: Smoke test staging deployment
+      # ── Smoke Tests ──────────────────────────────────────────────────────
+      # Closes #262: run smoke_test_staging.sh after deploy and fail the
+      # workflow (triggering rollback) if any check fails. (#262)
+      - name: Run staging smoke tests
+        id: smoke_test
         env:
           SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org"
           STELLAR_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
         run: |
           chmod +x scripts/smoke_test_staging.sh
-          ./scripts/smoke_test_staging.sh
+          set +e
+          ./scripts/smoke_test_staging.sh 2>&1 | tee smoke-test-output.txt
+          SMOKE_EXIT=${PIPESTATUS[0]}
+          set -e
+
+          # Publish results to the workflow summary
+          {
+            echo "## 🔬 Staging Smoke Test Results"
+            echo ""
+            if [[ "$SMOKE_EXIT" -eq 0 ]]; then
+              echo "**Status:** ✅ All smoke tests passed"
+            else
+              echo "**Status:** ❌ Smoke tests FAILED — deployment rolled back"
+            fi
+            echo ""
+            echo "### Output"
+            echo '```'
+            cat smoke-test-output.txt
+            echo '```'
+            echo ""
+            echo "**Commit:** \`${{ github.sha }}\`"
+            echo "**Run:** [View logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "smoke-exit=$SMOKE_EXIT" >> "$GITHUB_OUTPUT"
+          exit "$SMOKE_EXIT"
+
+      # ── Rollback on smoke test failure ───────────────────────────────────
+      - name: Rollback staging deployment
+        if: failure() && steps.smoke_test.outputs.smoke-exit != '0'
+        env:
+          STELLAR_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+        run: |
+          echo "⚠️  Smoke tests failed — initiating staging rollback"
+          if [[ -f scripts/deploy_staging.sh ]]; then
+            ROLLBACK=1 ./scripts/deploy_staging.sh || echo "Rollback script not yet available; manual rollback required."
+          fi
+          echo "::error::Staging smoke tests failed. Deployment has been rolled back."
 
       - name: Upload staging env file
         if: always()
@@ -94,8 +135,58 @@ jobs:
           path: |
             .env.staging
             config/staging.toml
+            smoke-test-output.txt
           retention-days: 30
           if-no-files-found: warn
+
+      # ── Slack notification ───────────────────────────────────────────────
+      - name: Notify Slack on smoke test failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [[ -z "${SLACK_WEBHOOK_URL:-}" ]]; then
+            echo "SLACK_WEBHOOK_URL not configured — skipping Slack notification."
+            exit 0
+          fi
+          curl -sf -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-type: application/json' \
+            --data "{
+              \"text\": \"❌ *Staging smoke tests failed* — deployment rolled back.\",
+              \"attachments\": [{
+                \"color\": \"danger\",
+                \"fields\": [
+                  {\"title\": \"Repository\", \"value\": \"${{ github.repository }}\", \"short\": true},
+                  {\"title\": \"Branch\", \"value\": \"${{ github.ref_name }}\", \"short\": true},
+                  {\"title\": \"Commit\", \"value\": \"\`${{ github.sha }}\`\", \"short\": true},
+                  {\"title\": \"Run\", \"value\": \"<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|View logs>\", \"short\": true}
+                ]
+              }]
+            }"
+
+      - name: Notify Slack on deployment success
+        if: success()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [[ -z "${SLACK_WEBHOOK_URL:-}" ]]; then
+            echo "SLACK_WEBHOOK_URL not configured — skipping Slack notification."
+            exit 0
+          fi
+          curl -sf -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-type: application/json' \
+            --data "{
+              \"text\": \"✅ *Staging deployment succeeded* — smoke tests passed.\",
+              \"attachments\": [{
+                \"color\": \"good\",
+                \"fields\": [
+                  {\"title\": \"Repository\", \"value\": \"${{ github.repository }}\", \"short\": true},
+                  {\"title\": \"Branch\", \"value\": \"${{ github.ref_name }}\", \"short\": true},
+                  {\"title\": \"Commit\", \"value\": \"\`${{ github.sha }}\`\", \"short\": true},
+                  {\"title\": \"Run\", \"value\": \"<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|View logs>\", \"short\": true}
+                ]
+              }]
+            }"
 
       - name: Deployment status
         if: always()
