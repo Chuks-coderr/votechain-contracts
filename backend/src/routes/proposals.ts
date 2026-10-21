@@ -146,29 +146,34 @@ function buildSearchQuery(
 
 // GET /proposals — cached 30 s
 // Supports ?q= for full-text search, ?state= for state filtering,
-// ?tag= for tag filtering (issue #102), ?page= and ?limit= for pagination,
-// ?after= for cursor-based pagination.
+// ?tag= for tag filtering (issue #102),
+// ?cursor= (last seen proposal ID) and ?limit= for cursor-based pagination (#225).
 router.get("/proposals", cacheProposalList, async (req: Request, res: Response) => {
   // TODO: fetch from Stellar RPC / indexer (stub returns empty array)
-  const proposals: unknown[] = [];
-  const page = Math.max(1, Number.parseInt(String(req.query.page ?? "1"), 10) || 1);
-  const limit = Math.min(
-    50,
-    Math.max(1, Number.parseInt(String(req.query.limit ?? "10"), 10) || 10),
-  );
+  const proposals: Array<{ id: number; title?: string; description?: string; state?: string; proposal_tags?: string[] }> = [];
+
+  // Cursor-based pagination (#225): cursor = last seen proposal_id, limit default 20, max 100.
+  const rawLimit = Number.parseInt(String(req.query.limit ?? "20"), 10);
+  const limit = Number.isNaN(rawLimit) ? 20 : Math.min(100, Math.max(1, rawLimit));
+
+  const cursor = typeof req.query.cursor === "string" && req.query.cursor !== ""
+    ? Number.parseInt(req.query.cursor, 10)
+    : undefined;
+
+  if (cursor !== undefined && (Number.isNaN(cursor) || cursor < 0)) {
+    return res.status(400).json({ error: "cursor must be a non-negative integer proposal ID" });
+  }
+
   const state = typeof req.query.state === "string" ? req.query.state : undefined;
   if (state && !VALID_STATES.has(state)) {
     return res.status(400).json({ error: "Invalid proposal state" });
   }
 
   // Issue #40: full-text search parameter.
-  // Sanitise the query before using it — actual DB call uses parameterised queries.
   const rawQ = typeof req.query.q === "string" ? req.query.q : undefined;
   const q = rawQ !== undefined ? sanitiseSearchQuery(rawQ) : undefined;
 
   // Issue #102: tag-based filtering.
-  // Only predefined taxonomy tags are accepted; unknown tags return a 400 so
-  // callers receive early feedback rather than a silently empty result set.
   const tag = typeof req.query.tag === "string" ? req.query.tag : undefined;
   if (tag !== undefined) {
     const normalisedTag = tag.toLowerCase();
@@ -179,23 +184,20 @@ router.get("/proposals", cacheProposalList, async (req: Request, res: Response) 
     }
   }
 
-  const after = typeof req.query.after === "string" ? req.query.after : undefined;
-  const offset = (page - 1) * limit;
-
-  // Build the search query (for use with a real DB connection).
+  // Build the parameterised DB query (for use with a real DB connection).
+  // Cursor pagination uses `WHERE id < :cursor ORDER BY id DESC` for append-only data.
+  const offset = 0; // offset unused in cursor mode; kept for buildSearchQuery signature compat
   const { sql, params } = buildSearchQuery(state, q || undefined, limit, offset, tag?.toLowerCase());
-  // TODO: execute `sql` with `params` against the indexer PostgreSQL database
-  // e.g.: const rows = await db.query(sql, params);
+  // TODO: replace stub with: const rows = await db.query(sql, params);
   void sql;
   void params;
 
   // Stub: filter the in-memory array (replace with DB results once connected).
-  let filtered = proposals as Array<{
-    title?: string;
-    description?: string;
-    state?: string;
-    proposal_tags?: string[];
-  }>;
+  let filtered = proposals.slice();
+
+  if (cursor !== undefined) {
+    filtered = filtered.filter((p) => p.id < cursor);
+  }
 
   if (state) {
     filtered = filtered.filter((p) => p.state === state);
@@ -210,26 +212,33 @@ router.get("/proposals", cacheProposalList, async (req: Request, res: Response) 
     );
   }
 
-  // Issue #102: filter by tag in the in-memory stub path.
   if (tag) {
     const normalisedTag = tag.toLowerCase();
     filtered = filtered.filter((p) => p.proposal_tags?.includes(normalisedTag));
   }
 
-  const data = filtered.slice(offset, offset + limit);
-  res.json({
+  // Sort descending by id (most recent first) then page with cursor.
+  filtered.sort((a, b) => b.id - a.id);
+  const data = filtered.slice(0, limit);
+
+  // next_cursor is the id of the last item returned; absent when no more pages.
+  const hasMore = filtered.length > limit;
+  const next_cursor = hasMore && data.length > 0 ? String(data[data.length - 1].id) : undefined;
+
+  const response: Record<string, unknown> = {
     data,
     pagination: {
-      page,
       limit,
-      total: filtered.length,
-      hasMore: offset + data.length < filtered.length,
-      ...(after ? { after } : {}),
+      has_more: hasMore,
+      ...(next_cursor !== undefined ? { next_cursor } : {}),
+      ...(cursor !== undefined ? { cursor: String(cursor) } : {}),
       ...(state ? { state } : {}),
       ...(q ? { q } : {}),
       ...(tag ? { tag: tag.toLowerCase() } : {}),
     },
-  });
+  };
+
+  res.json(response);
 });
 
 // GET /proposals/:id — cached 10 s
