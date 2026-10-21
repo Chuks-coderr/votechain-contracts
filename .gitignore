@@ -11,3 +11,30 @@ backend/package-lock.json
 
 # Never commit real secrets — use .env.example as the template
 # .env.example is intentionally tracked
+
+# Build outputs
+dist/
+frontend/dist/
+
+# Logs
+*.log
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Coverage reports
+coverage/
+frontend/.nyc_output/
+
+# Playwright HTML reports (generated artefacts — not test snapshots)
+# NOTE: frontend/e2e/snapshots/ is intentionally tracked as visual baselines
+playwright-report/
+playwright/.cache/
+frontend/playwright-report/
+
+# Storybook build output
+frontend/storybook-static/
+
+# OS artefacts
+.DS_Store
+Thumbs.db
