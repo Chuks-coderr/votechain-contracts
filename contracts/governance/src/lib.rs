@@ -1231,7 +1231,7 @@ impl GovernanceContract {
     /// - [`ContractError::ContractPaused`] if the contract is paused.
     /// - [`ContractError::InvalidAddress`] if `delegator` is the zero address.
     /// - [`ContractError::InvalidDelegateAddress`] if `delegate` is the zero address.
-    /// - [`ContractError::CannotDelegateToSelf`] if `delegator == delegate`.
+    /// - [`ContractError::CircularDelegation`] if the delegation would create a cycle.
     pub fn delegate(
         env: Env,
         delegator: Address,
@@ -1246,9 +1246,25 @@ impl GovernanceContract {
         if delegate == Address::from_str(&env, ZERO_ADDRESS) {
             return Err(ContractError::InvalidDelegateAddress);
         }
-        // Cannot delegate to self
         if delegator == delegate {
-            return Err(ContractError::CannotDelegateToSelf);
+            clear_delegation(&env, &delegator);
+            events::delegation_set(&env, &delegator, &delegate);
+            return Ok(());
+        }
+
+        // Follow the destination's current delegation chain before writing so a
+        // cycle can never be introduced, including cycles longer than two hops.
+        let mut cursor = delegate.clone();
+        let mut visited = soroban_sdk::Vec::new(&env);
+        loop {
+            if cursor == delegator || visited.contains(&cursor) {
+                return Err(ContractError::CircularDelegation);
+            }
+            visited.push_back(cursor.clone());
+            match get_delegation(&env, &cursor) {
+                Some(next) => cursor = next,
+                None => break,
+            }
         }
         set_delegation(&env, &delegator, &delegate);
         events::delegation_set(&env, &delegator, &delegate);
@@ -1274,11 +1290,11 @@ impl GovernanceContract {
         Ok(())
     }
 
-    /// Returns the address to which `delegator` has delegated, or `None`.
+    /// Returns the current delegate. Addresses default to delegating to themselves.
     ///
     /// This is a read-only helper for off-chain tooling and the frontend.
     pub fn get_delegate(env: Env, delegator: Address) -> Option<Address> {
-        get_delegation(&env, &delegator)
+        Some(get_delegation(&env, &delegator).unwrap_or(delegator))
     }
 
     /// Casts a vote and accumulates voting power from a list of delegators.

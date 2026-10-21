@@ -16,12 +16,12 @@
 //!
 //! Covers:
 //!   1. delegate() sets delegation in storage
-//!   2. get_delegate() returns the correct delegate
+//!   2. get_delegate() returns the current delegate (self by default)
 //!   3. undelegate() clears the delegation
 //!   4. Delegator cannot vote directly while power is delegated
 //!   5. Delegate can vote and accumulate delegator weight
 //!   6. Delegator can vote directly after undelegating
-//!   7. Cannot delegate to self
+//!   7. Self-delegation preserves direct voting power
 //!   8. Cannot delegate to zero address
 //!   9. Delegator marked as voted when delegate casts vote
 //!  10. Delegator cannot vote after being counted via cast_vote_with_delegators
@@ -66,14 +66,14 @@ mod delegation_tests {
         assert_eq!(stored, Some(delegate));
     }
 
-    // ── test 2: get_delegate returns None when no delegation ──────────────
+    // ── test 2: get_delegate returns self when no delegation is set ───────
     #[test]
     fn test_get_delegate_returns_none_when_not_delegated() {
         let t = setup_env();
         let addr = soroban_sdk::Address::generate(&t.env);
 
         let stored = t.client.get_delegate(&addr);
-        assert_eq!(stored, None);
+        assert_eq!(stored, Some(addr));
     }
 
     // ── test 3: undelegate() clears the delegation ────────────────────────
@@ -139,18 +139,29 @@ mod delegation_tests {
         assert_eq!(proposal.votes_yes, 500);
     }
 
-    // ── test 6: cannot delegate to self ───────────────────────────────────
+    // ── test 6: self-delegation leaves direct voting power available ──────
     #[test]
-    fn test_cannot_delegate_to_self() {
+    fn test_self_delegation_keeps_direct_voting_power() {
         let t = setup_env();
         let addr = soroban_sdk::Address::generate(&t.env);
 
-        let result = t.client.try_delegate(&addr, &addr);
-        assert_eq!(
-            result,
-            Err(Ok(ContractError::CannotDelegateToSelf)),
-            "expected CannotDelegateToSelf error"
-        );
+        t.client.delegate(&addr, &addr);
+        assert_eq!(t.client.get_delegate(&addr), Some(addr));
+    }
+
+    #[test]
+    fn test_circular_delegation_is_rejected() {
+        let t = setup_env();
+        let address_a = soroban_sdk::Address::generate(&t.env);
+        let address_b = soroban_sdk::Address::generate(&t.env);
+        let address_c = soroban_sdk::Address::generate(&t.env);
+
+        t.client.delegate(&address_a, &address_b);
+        t.client.delegate(&address_b, &address_c);
+
+        let result = t.client.try_delegate(&address_c, &address_a);
+        assert_eq!(result, Err(Ok(ContractError::CircularDelegation)));
+        assert_eq!(t.client.get_delegate(&address_c), Some(address_c));
     }
 
     // ── test 7: cannot delegate to zero address ───────────────────────────
