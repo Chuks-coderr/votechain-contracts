@@ -19,6 +19,7 @@ use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
     Address, Env, IntoVal, TryFromVal,
 };
+use crate::types::TokenDataKey;
 
 fn setup() -> (Env, TokenContractClient<'static>) {
     let env = Env::default();
@@ -45,6 +46,22 @@ fn test_transfer() {
     c.transfer(&admin, &user, &400);
     assert_eq!(c.balance(&admin), 600);
     assert_eq!(c.balance(&user), 400);
+}
+
+#[test]
+fn test_balance_read_extends_persistent_entry_ttl() {
+    let (env, c) = setup();
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &1_000);
+
+    let key = TokenDataKey::Balance(admin.clone());
+    env.storage().persistent().extend_ttl(&key, 1, 1);
+    let ttl_before = env.storage().persistent().get_ttl(&key);
+
+    assert_eq!(c.balance(&admin), 1_000);
+
+    let ttl_after = env.storage().persistent().get_ttl(&key);
+    assert!(ttl_after > ttl_before);
 }
 
 #[test]
