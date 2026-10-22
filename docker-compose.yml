@@ -36,7 +36,7 @@ services:
       - REDIS_URL=redis://redis:6379
     depends_on:
       redis:
-        condition: service_started
+        condition: service_healthy   # wait until redis-cli ping returns PONG
     logging: *default-logging
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
@@ -51,11 +51,16 @@ services:
       - "6379:6379"
     logging: *default-logging
     healthcheck:
+      # Confirm Redis is accepting connections before dependent services start.
+      # redis-cli exits 0 only when it receives "PONG" back from the server.
+      # interval/timeout/retries are tuned for fast local startup:
+      #   - first check at 3s, then every 5s → healthy within ~8s normally
+      #   - 5 retries × 5s = 25s maximum wait before unhealthy
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
+      interval: 5s
+      timeout: 3s
       retries: 5
-      start_period: 5s
+      start_period: 3s
 
   stellar-node:
     image: stellar/quickstart:latest
