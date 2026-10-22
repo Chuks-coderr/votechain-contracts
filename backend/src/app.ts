@@ -22,6 +22,7 @@ import { apiKeyAuth } from "./middleware/apiKeyAuth";
 import { rateLimit } from "./middleware/rateLimit";
 import healthRoutes from "./routes/health";
 import proposalRoutes from "./routes/proposals";
+import csvRoutes from "./routes/csv";
 import apiKeysRoutes from "./routes/apiKeys";
 import {
   notFoundHandler,
@@ -128,6 +129,7 @@ app.use("/api", rateLimit);
 
 // ── Routes ─────────────────────────────────────────────────────────────────
 app.use("/api", proposalRoutes);
+app.use("/api", csvRoutes);
 app.use("/api", apiKeysRoutes);
 
 // Catch unmatched routes — must come after all real route registrations.
