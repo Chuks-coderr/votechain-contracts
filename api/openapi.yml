@@ -18,6 +18,9 @@ info:
 
     ## Authentication
 
+    Third-party integrators: see the [API Integration Guide](../docs/api-integrator-guide.md)
+    for key provisioning, request headers, rate-limit handling, and authentication errors.
+
     The current API does **not** require authentication for read-only endpoints (`GET`).
     The cache-invalidation endpoint (`POST /api/proposals/invalidate`) should be
     protected at the network/infra level (e.g., internal-only ingress or a shared
@@ -70,24 +73,25 @@ paths:
         Results are cached for **30 seconds** in Redis.
       tags: [proposals]
       parameters:
-        - name: offset
+        - name: cursor
           in: query
-          description: Number of proposals to skip (zero-based pagination).
+          description: |
+            Last seen proposal ID (exclusive). Omit to fetch the first page.
+            Pass the `next_cursor` value from the previous response to advance.
           required: false
           schema:
             type: integer
             minimum: 0
-            default: 0
-          example: 0
+          example: 42
         - name: limit
           in: query
-          description: Maximum number of proposals to return. Capped at 50.
+          description: Maximum number of proposals to return. Default 20, capped at 100.
           required: false
           schema:
             type: integer
             minimum: 1
-            maximum: 50
-            default: 50
+            maximum: 100
+            default: 20
           example: 20
         - name: state
           in: query
@@ -108,22 +112,51 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ProposalSummary'
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProposalSummary'
+                  pagination:
+                    type: object
+                    properties:
+                      limit:
+                        type: integer
+                        example: 20
+                      has_more:
+                        type: boolean
+                        description: Whether additional results exist after this page.
+                        example: true
+                      next_cursor:
+                        type: string
+                        description: |
+                          Pass this value as the `cursor` query parameter to fetch the
+                          next page. Absent when `has_more` is false.
+                        example: "38"
+                    required: [limit, has_more]
+                required: [data, pagination]
               examples:
                 empty:
                   summary: No proposals yet
-                  value: []
+                  value:
+                    data: []
+                    pagination:
+                      limit: 20
+                      has_more: false
                 single:
                   summary: One active proposal
                   value:
-                    - id: 1
-                      title: "Increase Treasury Allocation"
-                      state: active
-                      quorum: 5000000
-                      start_time: 1700000000
-                      end_time: 1700604800
+                    data:
+                      - id: 1
+                        title: "Increase Treasury Allocation"
+                        state: active
+                        quorum: 5000000
+                        start_time: 1700000000
+                        end_time: 1700604800
+                    pagination:
+                      limit: 20
+                      has_more: false
         '400':
           description: Invalid query parameters.
           content:

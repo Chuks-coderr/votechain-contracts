@@ -19,6 +19,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import ProposalList from './ProposalList';
 import type { Proposal } from '../types';
 
@@ -48,7 +49,11 @@ const proposals: Proposal[] = [
 // ── Render helpers ────────────────────────────────────────────
 
 function renderList(props: Proposal[] = proposals) {
-  return render(<ProposalList proposals={props} />);
+  return render(
+    <MemoryRouter>
+      <ProposalList proposals={props} />
+    </MemoryRouter>,
+  );
 }
 
 // ── Tests ─────────────────────────────────────────────────────
@@ -63,9 +68,20 @@ describe('ProposalList', () => {
 
   it('renders an empty state when no proposals are passed', () => {
     renderList([]);
-    expect(
-      screen.getByText(/no proposals match/i),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(/no proposals yet/i);
+    expect(screen.queryByRole('button', { name: /clear filters/i })).not.toBeInTheDocument();
+  });
+
+  it('shows a filter empty state with a clear filters action', async () => {
+    const user = userEvent.setup();
+    renderList();
+
+    await user.type(screen.getByRole('searchbox', { name: /search proposals/i }), 'missing');
+
+    expect(screen.getByRole('status')).toHaveTextContent(/no matching proposals/i);
+    await user.click(screen.getByRole('button', { name: /clear filters/i }));
+    expect(screen.getByText('Alpha Proposal')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /clear filters/i })).not.toBeInTheDocument();
   });
 
   it('filters by search text (title match)', async () => {

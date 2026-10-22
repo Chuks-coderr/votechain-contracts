@@ -1,9 +1,15 @@
 # SEC-012 — Formal Verification of Pass Condition Logic
 
-**Issue:** [#60](https://github.com/veracindarella/votechain-contracts/issues/60)  
-**Date:** 2026-09-28  
-**Status:** Verified (Kani harnesses green)  
-**Files:** `contracts/governance/src/kani_proofs.rs`
+| Field | Value |
+|---|---|
+| Record type | Formal verification |
+| Date | 2026-09-28 |
+| Status | Verified; Kani harnesses green |
+| Severity | Not applicable; no finding reported |
+| Affected components | `contracts/governance/src/kani_proofs.rs` |
+| Reporter / reviewer | Not recorded |
+
+Related issue: [#60](https://github.com/veracindarella/votechain-contracts/issues/60). Format: [SEC template](SEC-TEMPLATE.md).
 
 ---
 

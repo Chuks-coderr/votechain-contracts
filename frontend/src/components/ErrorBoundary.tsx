@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import React, { Component, ErrorInfo, ReactNode } from "react";
+import React, { Component, createRef, ErrorInfo, ReactNode } from "react";
 import i18n from "../i18n";
 
 interface Props {
@@ -63,12 +63,13 @@ export class ErrorBoundary extends Component<Props, State> {
     const { section } = this.props;
 
     if (error) {
-      const message = section
-        ? `The "${section}" section failed to load.`
-        : "An unexpected error occurred.";
-
       return (
-        <div role="alert" style={{ padding: "1.5rem", textAlign: "center" }}>
+        <div
+          ref={this.fallbackRef}
+          role="alert"
+          tabIndex={-1}
+          style={{ padding: "1.5rem", textAlign: "center" }}
+        >
           <h2>{i18n.t("app.somethingWentWrong")}</h2>
           <p>
             {this.props.section

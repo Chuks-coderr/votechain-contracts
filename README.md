@@ -3,6 +3,7 @@
 [![CI](https://github.com/veracindarella/votechain-contracts/actions/workflows/ci.yml/badge.svg)](https://github.com/veracindarella/votechain-contracts/actions/workflows/ci.yml)
 [![Coverage](https://github.com/veracindarella/votechain-contracts/actions/workflows/ci.yml/badge.svg?job=coverage)](https://github.com/veracindarella/votechain-contracts/actions/workflows/ci.yml)
 [![Staging Deploy](https://github.com/veracindarella/votechain-contracts/actions/workflows/deploy-staging.yml/badge.svg)](https://github.com/veracindarella/votechain-contracts/actions/workflows/deploy-staging.yml)
+[![Protocol Compat](https://github.com/veracindarella/votechain-contracts/actions/workflows/stellar-protocol-compat.yml/badge.svg)](https://github.com/veracindarella/votechain-contracts/actions/workflows/stellar-protocol-compat.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Milestone: v1.0 MVP](https://img.shields.io/github/milestones/progress/veracindarella/votechain-contracts/1)](https://github.com/veracindarella/votechain-contracts/milestone/1)
 [![Milestone: v1.1 Delegation](https://img.shields.io/github/milestones/progress/veracindarella/votechain-contracts/2)](https://github.com/veracindarella/votechain-contracts/milestone/2)
@@ -63,6 +64,64 @@ Decentralized governance is critical for DAOs, protocols, and communities to mak
 ### System Overview
 
 VoteChain consists of two complementary Soroban smart contracts:
+
+```mermaid
+flowchart LR
+    subgraph Clients
+        Web[Frontend]
+        Widget[Embeddable widget]
+        Alerts[Governance alerts bot]
+        Wallet[Freighter wallet]
+        Discord[Discord webhook]
+    end
+
+    subgraph Services
+        Backend[Backend API]
+        Cache[(Redis cache)]
+        Indexer[Indexer process<br/>ingestion loop + REST API]
+        Database[(PostgreSQL<br/>events + cursor)]
+        Prometheus[Prometheus]
+        Grafana[Grafana]
+    end
+
+    subgraph Stellar
+        Horizon[Stellar Horizon / RPC]
+        Governance[Governance contract]
+        Token[Token contract]
+    end
+
+    Web -->|proposal API reads| Backend
+    Widget -->|proposal API reads| Backend
+    Alerts -->|poll proposals| Backend
+    Alerts -->|notifications| Discord
+    Backend <--> Cache
+
+    Indexer -->|poll contract events| Horizon
+    Horizon -->|events| Indexer
+    Indexer -->|persist events and cursor| Database
+    Indexer -->|invalidate proposal cache| Backend
+    Indexer -.->|event and proposal queries| Database
+
+    Governance -->|contract events| Horizon
+    Prometheus -->|scrape /metrics| Backend
+    Grafana -->|query metrics| Prometheus
+
+    Web -.->|target vote flow| Wallet
+    Wallet -.->|signed transaction| Horizon
+    Horizon -.->|invoke| Governance
+    Governance -.->|read voting balance| Token
+
+    classDef vote fill:#fff2cc,stroke:#b7791f,stroke-width:2px;
+    class Wallet,Governance,Token vote;
+```
+
+The dotted vote path shows the intended on-chain transaction flow. The current
+frontend signs a placeholder XDR with Freighter but does not yet submit it to
+Stellar; the diagram does not imply that voting is end-to-end live. The indexer
+REST API is part of the indexer process and serves queries from PostgreSQL.
+
+The following diagram zooms in on the Soroban contracts and their relationship
+to the Stellar network.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -1252,6 +1311,18 @@ A reproducible development environment is provided via Docker.
 
 **Prerequisites:** Docker and Docker Compose installed.
 
+Image references in `Dockerfile` and `docker-compose.yml` are pinned to SHA-256
+digests. Dependabot checks Docker images weekly and opens updates when a tag or
+digest changes. To refresh a pin manually, inspect the current registry digest:
+
+```bash
+docker buildx imagetools inspect rust:1.86-slim-bookworm
+```
+
+Copy the top-level `Digest` value and update the matching reference to
+`image:tag@sha256:<digest>`. Use the image's existing tag and verify the Compose
+configuration with `docker compose config` before committing.
+
 ### Start the Full Environment
 
 ```bash
@@ -1528,7 +1599,7 @@ We welcome contributions from the community. Please see [CONTRIBUTING.md](CONTRI
 ### Documentation
 
 - **[GETTING_STARTED.md](docs/GETTING_STARTED.md)** — Step-by-step setup guide
-- **[API Reference](docs/api-reference.md)** — Complete REST API reference (OpenAPI 3.1)
+- **[API Reference](docs/api-reference.md)** — Complete REST API reference (OpenAPI 3.1) · [Swagger UI](https://veracindarella.github.io/votechain-contracts/api/)
 - **[Proposal Lifecycle](docs/lifecycle.md)** — Detailed state diagram and transitions
 - **[Storage Model](docs/storage.md)** — Storage tier strategy and optimization
 - **[Upgrading](docs/upgrading.md)** — Contract upgrade procedures

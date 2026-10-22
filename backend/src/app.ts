@@ -15,7 +15,8 @@
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
-import { connectRedis } from "./middleware/redisCache";
+import http from "http";
+import { connectRedis, getRedis } from "./middleware/redisCache";
 import { requestTracing } from "./middleware/requestTracing";
 import { apiKeyAuth } from "./middleware/apiKeyAuth";
 import { rateLimit } from "./middleware/rateLimit";
@@ -137,10 +138,93 @@ app.use(globalErrorHandler);
 
 const PORT = parseInt(env.PORT, 10);
 
+// ---------------------------------------------------------------------------
+// Graceful shutdown (#231)
+// ---------------------------------------------------------------------------
+
+/**
+ * How long (ms) to wait for in-flight requests to drain before forcing exit.
+ * Kubernetes default termination grace period is 30 s; we match it.
+ */
+const SHUTDOWN_TIMEOUT_MS = 30_000;
+
+/**
+ * Registers SIGTERM / SIGINT handlers that:
+ *   1. Stop the HTTP server accepting new connections.
+ *   2. Wait up to SHUTDOWN_TIMEOUT_MS for in-flight requests to finish.
+ *   3. Close the Redis connection cleanly.
+ *   4. Log the drain count and exit.
+ *
+ * Any error during shutdown is logged but does not prevent process exit so
+ * the container is always released by the orchestrator.
+ */
+function registerGracefulShutdown(server: http.Server): void {
+  let inflightRequests = 0;
+
+  // Track in-flight HTTP requests so we can report the drain count.
+  server.on("request", (_req, res) => {
+    inflightRequests++;
+    res.on("finish", () => {
+      inflightRequests--;
+    });
+  });
+
+  async function shutdown(signal: string): Promise<void> {
+    console.log(`[shutdown] received ${signal} — stopping server`);
+
+    // Stop accepting new connections immediately.
+    server.close(async (err) => {
+      if (err) {
+        console.error("[shutdown] server.close error:", err);
+      }
+    });
+
+    // Give in-flight requests up to SHUTDOWN_TIMEOUT_MS to complete.
+    const deadline = Date.now() + SHUTDOWN_TIMEOUT_MS;
+    while (inflightRequests > 0 && Date.now() < deadline) {
+      console.log(
+        `[shutdown] waiting for ${inflightRequests} in-flight request(s)…`
+      );
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    if (inflightRequests > 0) {
+      console.warn(
+        `[shutdown] timeout reached — ${inflightRequests} request(s) still in flight; forcing exit`
+      );
+    } else {
+      console.log("[shutdown] all in-flight requests drained");
+    }
+
+    // Close Redis cleanly so connection-pool resources are released.
+    const redisClient = getRedis();
+    if (redisClient?.isOpen) {
+      try {
+        await redisClient.quit();
+        console.log("[shutdown] redis connection closed");
+      } catch (redisErr) {
+        console.error("[shutdown] redis quit error:", redisErr);
+      }
+    }
+
+    console.log(
+      `[shutdown] complete — drained ${inflightRequests === 0 ? "all" : "partial"} requests`
+    );
+    process.exit(inflightRequests > 0 ? 1 : 0);
+  }
+
+  process.once("SIGTERM", () => shutdown("SIGTERM").catch(console.error));
+  process.once("SIGINT",  () => shutdown("SIGINT").catch(console.error));
+}
+
 // connectRedis now degrades gracefully on failure (#38) — the server always
 // starts regardless of whether Redis is reachable.
 connectRedis(env.REDIS_URL).then(() => {
-  app.listen(PORT, () => console.log(`[server] listening on :${PORT}`));
+  const server = http.createServer(app);
+  registerGracefulShutdown(server);
+  server.listen(PORT, () =>
+    console.log(`[server] listening on :${PORT}`)
+  );
 });
 
 export default app;

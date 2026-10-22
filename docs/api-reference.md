@@ -9,6 +9,9 @@ VoteChain exposes two API surfaces:
 
 The complete OpenAPI 3.1 specification lives at [`api/openapi.yml`](../api/openapi.yml).
 
+**Rendered Swagger UI (always up to date with `main`):**
+👉 https://veracindarella.github.io/votechain-contracts/api/
+
 ---
 
 ## Swagger UI (Development)

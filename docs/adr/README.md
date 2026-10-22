@@ -16,6 +16,7 @@ This directory contains ADRs for VoteChain — records of significant architectu
 | [ADR-013](ADR-013-separate-indexer-service.md) | A separate indexer service (not querying Horizon directly from the API) | Accepted |
 | [ADR-014](ADR-014-postgresql-storage-backend.md) | PostgreSQL as the indexer's storage backend | Accepted |
 | [ADR-015](ADR-015-redis-caching-strategy.md) | Redis caching strategy (TTL-based + event-driven invalidation) | Accepted |
+| [ADR-016](ADR-016-indexer-technology-postgresql-rust.md) | Indexer technology choice: PostgreSQL + Rust | Accepted |
 
 To create a new ADR, copy [TEMPLATE.md](TEMPLATE.md), number it sequentially, and open a PR.
 

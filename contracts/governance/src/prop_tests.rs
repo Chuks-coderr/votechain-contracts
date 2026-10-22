@@ -30,6 +30,7 @@
 
 #![cfg(test)]
 
+use super::quorum_is_met;
 use proptest::prelude::*;
 
 /// Maximum token supply used across all strategies (mirrors a realistic cap).
@@ -87,6 +88,25 @@ proptest! {
         // Re-derive from the same inputs — must agree.
         let expected = (yes + no + abstain) >= quorum && yes > no;
         prop_assert_eq!(passes, expected);
+    }
+
+    /// At each side of the quorum boundary, finalisation matches the contract rule.
+    #[test]
+    fn quorum_boundary_matches_specification(
+        quorum in prop_oneof![Just(1i128), Just(MAX_SUPPLY), 1i128..MAX_SUPPLY],
+        offset in -1i8..=1,
+        yes_raw in 0i128..=MAX_SUPPLY,
+        no_raw in 0i128..=MAX_SUPPLY,
+    ) {
+        let total = (quorum + i128::from(offset)).clamp(0, MAX_SUPPLY);
+        let yes = yes_raw.min(total);
+        let no = no_raw.min(total - yes);
+        let abstain = total - yes - no;
+
+        prop_assert_eq!(yes + no + abstain, total);
+        let actual = quorum_is_met(total, quorum, yes, no);
+        let expected = total >= quorum && yes > no;
+        prop_assert_eq!(actual, expected);
     }
 
     // -------------------------------------------------------------------------

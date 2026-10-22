@@ -6,8 +6,9 @@
  * impact, offending selectors and a link to the fix guide so CI output is
  * actionable.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, waitFor, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import axe from 'axe-core';
 import type { ReactElement } from 'react';
 import '../i18n';
@@ -17,6 +18,8 @@ import ProposalList from '../pages/ProposalList';
 import ProposalDetail from '../pages/ProposalDetail';
 import VotingPanel from '../pages/VotingPanel';
 import { GovernanceDashboard } from '../pages/GovernanceDashboard';
+import Simulate from '../pages/Simulate';
+import { WalletProvider } from '../context/WalletContext';
 import type { Proposal } from '../types';
 
 const WCAG_AA_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];
@@ -47,8 +50,16 @@ async function expectNoA11yViolations(container: HTMLElement) {
 }
 
 async function check(ui: ReactElement) {
-  const { container } = render(<main>{ui}</main>);
+  const { container } = renderPage(ui);
   await expectNoA11yViolations(container);
+}
+
+function renderPage(ui: ReactElement) {
+  return render(
+    <MemoryRouter>
+      <WalletProvider>{ui}</WalletProvider>
+    </MemoryRouter>,
+  );
 }
 
 const proposals: Proposal[] = [
@@ -56,9 +67,11 @@ const proposals: Proposal[] = [
     id: 'P-001',
     title: 'Alpha Proposal',
     description: 'desc',
+    proposer: 'GCFX4Q...ABC',
     state: 'Active',
     createdAt: '2026-01-01',
     endAt: '2026-04-01',
+    quorum: 1000,
     votesCount: 1,
     totalWeight: 2000,
     votes: [{ address: 'GCFX4Q...ABC', type: 'For', weight: 2000, votedAt: '2026-02-15' }],
@@ -66,7 +79,24 @@ const proposals: Proposal[] = [
 ];
 
 describe('accessibility (WCAG 2.1 AA)', () => {
-  afterEach(() => cleanup());
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        participation_rate: {},
+        pass_rate: 0,
+        avg_quorum_fill_rate: 0,
+        voter_retention: [],
+        by_state: { Active: 0, Passed: 0, Rejected: 0, Executed: 0, Cancelled: 0 },
+        computed_at: '2026-01-01T00:00:00.000Z',
+      }),
+    }));
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
 
   it('ProposalList has no violations', async () => {
     await check(<ProposalListComponent proposals={proposals} />);
@@ -81,7 +111,7 @@ describe('accessibility (WCAG 2.1 AA)', () => {
   });
 
   it('VotingPanel has no violations', async () => {
-    await check(<VotingPanel proposalTitle="Alpha Proposal" />);
+    await check(<VotingPanel />);
   });
 
   it('VoteHistory has no violations', async () => {
@@ -89,12 +119,12 @@ describe('accessibility (WCAG 2.1 AA)', () => {
   });
 
   it('GovernanceDashboard has no violations', async () => {
-    const { container } = render(
-      <main>
-        <GovernanceDashboard />
-      </main>,
-    );
+    const { container } = renderPage(<GovernanceDashboard />);
     await waitFor(() => expect(screen.getByText(/proposals by state/i)).toBeInTheDocument());
     await expectNoA11yViolations(container);
+  });
+
+  it('Simulate page has no violations', async () => {
+    await check(<Simulate />);
   });
 });

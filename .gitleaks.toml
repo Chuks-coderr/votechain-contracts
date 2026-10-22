@@ -1,0 +1,57 @@
+# .gitleaks.toml
+# Custom gitleaks ruleset for the VoteChain contracts repository.
+# Extended from gitleaks default rules with Stellar-specific patterns.
+# Docs: https://github.com/gitleaks/gitleaks#configuration
+
+title = "VoteChain gitleaks config"
+
+# Extend the default gitleaks ruleset so all standard detections still apply
+[extend]
+useDefault = true
+
+# ── Custom rules ───────────────────────────────────────────────────────────────
+
+[[rules]]
+# Stellar secret keys begin with 'S' and are 56 uppercase base32 characters.
+# Example: SCZANGBA5XLMKZLJDCIXFR7HMKDSFM7WLNQ5KXH5AJWKSMZOKWPCYPZ
+id          = "stellar-secret-key"
+description = "Stellar secret key (S... 56-char base32)"
+regex       = '''(?:^|[^A-Z2-7])([S][A-Z2-7]{55})(?:[^A-Z2-7]|$)'''
+secretGroup = 1
+keywords    = ["stellar", "secret", "SCZANG", "seed"]
+entropy     = 3.5
+
+[[rules]]
+# Stellar mnemonic phrases (24-word BIP-39) are sometimes stored in env files
+id          = "stellar-mnemonic"
+description = "Possible Stellar / BIP-39 mnemonic phrase"
+regex       = '''(?i)mnemonic[\s\"'=:]+([a-z]+ ){11,}[a-z]+'''
+keywords    = ["mnemonic", "seed phrase"]
+
+[[rules]]
+# Generic high-entropy base64 that looks like a private key / token
+id          = "high-entropy-base64-secret"
+description = "High-entropy base64 value in secret/key/token/password variable"
+regex       = '''(?i)(?:secret|private[_-]?key|api[_-]?key|token|password|passwd|auth)[\"'\s]*[=:]+[\"'\s]*([A-Za-z0-9+/]{40,}={0,2})'''
+entropy     = 4.5
+secretGroup = 1
+
+# ── Allowlist (false-positive suppression) ────────────────────────────────────
+
+[allowlist]
+description = "Global false-positive suppressions"
+regexes     = [
+  # Test / mock Stellar addresses that appear in test fixtures
+  '''GBXYZABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOP''',
+  '''GCABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRS''',
+  '''GDABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRS''',
+  '''GEABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRS''',
+  '''GFABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRS''',
+]
+paths       = [
+  # Lock files and generated output never contain real secrets
+  '''Cargo\.lock''',
+  '''package-lock\.json''',
+  # Test snapshot JSON files
+  '''test_snapshots/''',
+]

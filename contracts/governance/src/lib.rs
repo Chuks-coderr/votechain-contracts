@@ -28,6 +28,10 @@ pub mod test_helpers;
 mod test_delegation;
 #[cfg(test)]
 mod test_event_snapshots;
+#[cfg(test)]
+mod test_string_boundaries;
+#[cfg(test)]
+mod test_already_voted_regression;
 
 use soroban_sdk::{contract, contractclient, contractimpl, token, Address, Env, String, Vec};
 use types::{ConfigKey, ContractConfig, ContractError, ContractState, ProposalState, ProposalType, Proposal, Vote, VoteRecord};
@@ -53,6 +57,10 @@ const MAX_BATCH_VOTERS: u32 = 50;
 // Maximum byte length of an optional off-chain comment hash (e.g. IPFS CID)
 // attached to a vote via `cast_vote`. See issue #103.
 const MAX_COMMENT_HASH_LEN: u32 = 64;
+
+fn quorum_is_met(total_votes: i128, quorum: i128, votes_yes: i128, votes_no: i128) -> bool {
+    total_votes >= quorum && votes_yes > votes_no
+}
 
 /// Minimum admin transfer window in seconds (5 minutes).
 ///
@@ -600,7 +608,7 @@ impl GovernanceContract {
         }
 
         let total = proposal.votes_yes + proposal.votes_no + proposal.votes_abstain;
-        if total >= proposal.quorum && proposal.votes_yes > proposal.votes_no {
+        if quorum_is_met(total, proposal.quorum, proposal.votes_yes, proposal.votes_no) {
             let timelock = get_timelock_duration(&env);
             proposal.execute_after = now + timelock;
             proposal.state = ProposalState::Passed;
@@ -1227,7 +1235,7 @@ impl GovernanceContract {
     /// - [`ContractError::ContractPaused`] if the contract is paused.
     /// - [`ContractError::InvalidAddress`] if `delegator` is the zero address.
     /// - [`ContractError::InvalidDelegateAddress`] if `delegate` is the zero address.
-    /// - [`ContractError::CannotDelegateToSelf`] if `delegator == delegate`.
+    /// - [`ContractError::CircularDelegation`] if the delegation would create a cycle.
     pub fn delegate(
         env: Env,
         delegator: Address,
@@ -1242,9 +1250,25 @@ impl GovernanceContract {
         if delegate == Address::from_str(&env, ZERO_ADDRESS) {
             return Err(ContractError::InvalidDelegateAddress);
         }
-        // Cannot delegate to self
         if delegator == delegate {
-            return Err(ContractError::CannotDelegateToSelf);
+            clear_delegation(&env, &delegator);
+            events::delegation_set(&env, &delegator, &delegate);
+            return Ok(());
+        }
+
+        // Follow the destination's current delegation chain before writing so a
+        // cycle can never be introduced, including cycles longer than two hops.
+        let mut cursor = delegate.clone();
+        let mut visited = soroban_sdk::Vec::new(&env);
+        loop {
+            if cursor == delegator || visited.contains(&cursor) {
+                return Err(ContractError::CircularDelegation);
+            }
+            visited.push_back(cursor.clone());
+            match get_delegation(&env, &cursor) {
+                Some(next) => cursor = next,
+                None => break,
+            }
         }
         set_delegation(&env, &delegator, &delegate);
         events::delegation_set(&env, &delegator, &delegate);
@@ -1270,11 +1294,11 @@ impl GovernanceContract {
         Ok(())
     }
 
-    /// Returns the address to which `delegator` has delegated, or `None`.
+    /// Returns the current delegate. Addresses default to delegating to themselves.
     ///
     /// This is a read-only helper for off-chain tooling and the frontend.
     pub fn get_delegate(env: Env, delegator: Address) -> Option<Address> {
-        get_delegation(&env, &delegator)
+        Some(get_delegation(&env, &delegator).unwrap_or(delegator))
     }
 
     /// Casts a vote and accumulates voting power from a list of delegators.

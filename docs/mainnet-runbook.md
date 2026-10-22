@@ -206,6 +206,19 @@ After a manual deploy, manually update `config/mainnet.toml` and create a GitHub
 
 ---
 
+## Admin Key Rotation
+
+Rotating the governance contract admin is a separate operational procedure
+covered in its own runbook:
+
+> **[docs/admin-key-rotation-runbook.md](admin-key-rotation-runbook.md)**
+
+That runbook covers: when to rotate, prerequisites, the two-step
+propose/accept flow via `scripts/rotate-admin.sh`, on-chain verification,
+and rollback procedures for each failure mode.
+
+---
+
 ## Logging and Log Rotation
 
 Production containers (`backend`, `indexer`) log structured JSON to stdout. Local `json-file`
