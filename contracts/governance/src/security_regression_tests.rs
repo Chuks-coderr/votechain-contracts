@@ -202,7 +202,7 @@ fn sec_010_setup() -> (Env, GovernanceContractClient<'static>, ReentrantTokenCli
 
     let admin = Address::generate(&env);
     gov.initialize(
-        &admin, &tok_id, &0_i128, &0_u64, &60_u64, &2_592_000_u64, &false, &0_u64, &0_u64,
+        &admin, &tok_id, &0_i128, &0_u64, &60_u64, &2_592_000_u64, &false, &0_u64, &0_u64, &0_u32,
     );
     let pid = gov.create_proposal(
         &admin,

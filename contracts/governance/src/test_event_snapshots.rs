@@ -62,7 +62,7 @@ fn snap_token(env: &Env, admin: &Address) -> Address {
 fn snap_gov(env: &Env, admin: &Address, token: &Address) -> GovernanceContractClient<'static> {
     let id = env.register(GovernanceContract, ());
     let c = GovernanceContractClient::new(env, &id);
-    c.initialize(admin, token, &0_i128, &0_u64, &60_u64, &2_592_000_u64, &false, &0_u64, &0_u64);
+    c.initialize(admin, token, &0_i128, &0_u64, &60_u64, &2_592_000_u64, &false, &0_u64, &0_u64, &0_u32);
     c
 }
 
@@ -90,7 +90,7 @@ fn test_event_snapshot_contract_initialized() {
     let token = snap_token(&env, &admin);
     let id = env.register(GovernanceContract, ());
     let c = GovernanceContractClient::new(&env, &id);
-    c.initialize(&admin, &token, &0, &0, &60, &2_592_000, &false, &0, &0);
+    c.initialize(&admin, &token, &0, &0, &60, &2_592_000, &false, &0, &0, &0_u32);
 
     let events = env.events().all();
     assert!(
