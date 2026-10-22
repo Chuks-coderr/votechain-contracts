@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "ts-node src/app.ts",
     "build": "tsc",
+    "test": "npm run build && node --test dist/middleware/validation.test.js",
     "start": "node dist/app.js"
   },
   "dependencies": {
