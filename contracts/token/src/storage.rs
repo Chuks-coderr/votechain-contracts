@@ -30,6 +30,7 @@
 //! - **Temporary** – short-lived allowances (`Allowance`).
 //!   Automatically expires; no manual TTL management required.
 
+use crate::staking::StakeRecord;
 use crate::types::{Allowance, ContractError, TokenDataKey};
 use soroban_sdk::{Address, Env};
 
@@ -150,4 +151,25 @@ pub fn get_version(env: &Env) -> (u32, u32, u32) {
         .instance()
         .get(&TokenDataKey::Version)
         .unwrap_or((0, 0, 0))
+}
+
+/// SEC-013: Returns the active [`StakeRecord`] for `staker`, if any.
+pub fn get_stake_record(env: &Env, staker: &Address) -> Option<StakeRecord> {
+    env.storage()
+        .persistent()
+        .get(&TokenDataKey::StakeRecord(staker.clone()))
+}
+
+/// SEC-013: Writes (or overwrites) the [`StakeRecord`] for `staker`.
+pub fn set_stake_record(env: &Env, staker: &Address, record: &StakeRecord) {
+    env.storage()
+        .persistent()
+        .set(&TokenDataKey::StakeRecord(staker.clone()), record);
+}
+
+/// SEC-013: Deletes the [`StakeRecord`] for `staker` (called on full unstake).
+pub fn remove_stake_record(env: &Env, staker: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&TokenDataKey::StakeRecord(staker.clone()));
 }

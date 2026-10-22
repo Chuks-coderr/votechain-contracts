@@ -38,6 +38,7 @@ const GovernanceDashboard = React.lazy(() =>
 );
 const Simulate = React.lazy(() => import('./pages/Simulate'));
 const CreateProposal = React.lazy(() => import('./pages/CreateProposal'));
+const Leaderboard = React.lazy(() => import('./pages/Leaderboard'));
 
 /** Updates the document title on route change (issue #16 — browser history / a11y). */
 function PageTitle({ title }: { title: string }) {
@@ -113,13 +114,13 @@ function AppRoutes() {
                 </ErrorBoundary>
               }
             />
-            {/* Issue #326 — Proposal creation form */}
+            {/* Issue #325 — Voter leaderboard */}
             <Route
-              path="/proposals/new"
+              path="/leaderboard"
               element={
-                <ErrorBoundary section="CreateProposal">
-                  <PageTitle title="New Proposal" />
-                  <CreateProposal />
+                <ErrorBoundary section="Leaderboard">
+                  <PageTitle title="Leaderboard" />
+                  <Leaderboard />
                 </ErrorBoundary>
               }
             />

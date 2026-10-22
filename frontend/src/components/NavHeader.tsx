@@ -63,7 +63,7 @@ export function NavHeader({ walletSlot }: NavHeaderProps) {
           <nav className="desktop-nav" aria-label="Main navigation">
             <ul className="nav-list">
               <li><NavLink to="/" end className={({ isActive }) => isActive ? 'nav-active' : undefined}>Proposals</NavLink></li>
-              <li><NavLink to="/proposals/new" className={({ isActive }) => isActive ? 'nav-active' : undefined}>New Proposal</NavLink></li>
+              <li><NavLink to="/leaderboard" className={({ isActive }) => isActive ? 'nav-active' : undefined}>Leaderboard</NavLink></li>
               <li><NavLink to="/dashboard" className={({ isActive }) => isActive ? 'nav-active' : undefined}>Dashboard</NavLink></li>
               <li><NavLink to="/history" className={({ isActive }) => isActive ? 'nav-active' : undefined}>Vote History</NavLink></li>
             </ul>
@@ -96,7 +96,7 @@ export function NavHeader({ walletSlot }: NavHeaderProps) {
         >
           <ul className="mobile-nav-list">
             <li><NavLink to="/" end onClick={() => setMenuOpen(false)}>Proposals</NavLink></li>
-            <li><NavLink to="/proposals/new" onClick={() => setMenuOpen(false)}>New Proposal</NavLink></li>
+            <li><NavLink to="/leaderboard" onClick={() => setMenuOpen(false)}>Leaderboard</NavLink></li>
             <li><NavLink to="/dashboard" onClick={() => setMenuOpen(false)}>Dashboard</NavLink></li>
             <li><NavLink to="/history" onClick={() => setMenuOpen(false)}>Vote History</NavLink></li>
           </ul>
