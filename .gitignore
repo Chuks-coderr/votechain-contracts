@@ -9,6 +9,31 @@ target/
 node_modules/
 backend/package-lock.json
 
+# Test snapshots — regression artifacts, not source code
+test_snapshots/
+
+# Build artifacts
+dist/
+build/
+out/
+.cache/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Coverage reports
+coverage/
+*.lcov
+.tarpaulin/
+
 # Never commit real secrets — use .env.example as the template
 # .env.example is intentionally tracked
 
