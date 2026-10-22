@@ -37,6 +37,7 @@ const GovernanceDashboard = React.lazy(() =>
   import('./pages/GovernanceDashboard').then((m) => ({ default: m.GovernanceDashboard ?? m.default }))
 );
 const Simulate = React.lazy(() => import('./pages/Simulate'));
+const CreateProposal = React.lazy(() => import('./pages/CreateProposal'));
 
 /** Updates the document title on route change (issue #16 — browser history / a11y). */
 function PageTitle({ title }: { title: string }) {
@@ -109,6 +110,16 @@ function AppRoutes() {
                 <ErrorBoundary section="Simulate">
                   <PageTitle title="Simulate" />
                   <Simulate />
+                </ErrorBoundary>
+              }
+            />
+            {/* Issue #324/#326 — Proposal creation form with template picker */}
+            <Route
+              path="/create"
+              element={
+                <ErrorBoundary section="CreateProposal">
+                  <PageTitle title="Create Proposal" />
+                  <CreateProposal />
                 </ErrorBoundary>
               }
             />
