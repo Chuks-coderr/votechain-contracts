@@ -1,0 +1,64 @@
+{
+  "nav": {
+    "title": "VoteChain",
+    "subtitle": "Stellar Governance",
+    "switchLanguage": "Switch language",
+    "langEN": "EN",
+    "langES": "ES"
+  },
+  "proposals": {
+    "heading": "Proposals",
+    "searchPlaceholder": "Search title or description",
+    "searchLabel": "Search proposals",
+    "filterAll": "All",
+    "filterActive": "Active",
+    "filterPassed": "Passed",
+    "filterRejected": "Rejected",
+    "filterExecuted": "Executed",
+    "filterCancelled": "Cancelled",
+    "sortNewest": "Newest",
+    "sortOldest": "Oldest",
+    "sortMostVotes": "Most votes",
+    "sortEndingSoon": "Ending soon",
+    "colId": "ID",
+    "colTitle": "Title",
+    "colState": "State",
+    "colCreated": "Created",
+    "colEndDate": "End date",
+    "colVotes": "Votes",
+    "colWeight": "Weight",
+    "noResults": "No proposals match your search and filter criteria.",
+    "caption": "Filtered and sorted proposal listing"
+  },
+  "states": {
+    "Active": "Active",
+    "Passed": "Passed",
+    "Rejected": "Rejected",
+    "Executed": "Executed",
+    "Cancelled": "Cancelled"
+  },
+  "errors": {
+    "boundaryHeading": "Something went wrong",
+    "boundaryMessage": "An unexpected error occurred in this section.",
+    "proposalNotFound": "Proposal not found",
+    "proposalNotFoundMessage": "The proposal you are looking for does not exist.",
+    "loadFailed": "Failed to load proposals. Please try again later."
+  },
+  "quorum": {
+    "progress": "Quorum progress",
+    "met": "met",
+    "notMet": "not yet met"
+  },
+  "voting": {
+    "voteFor": "For",
+    "voteAgainst": "Against",
+    "voteAbstain": "Abstain",
+    "connectWallet": "Connect wallet to vote",
+    "submitVote": "Submit vote"
+  },
+  "common": {
+    "loading": "Loading…",
+    "back": "Back",
+    "viewOnExplorer": "View on Stellar Explorer"
+  }
+}
