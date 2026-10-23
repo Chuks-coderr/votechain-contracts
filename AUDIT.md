@@ -2,6 +2,61 @@
 
 ---
 
+## SEC-002 — v1.0 Third-Party Audit (Pre-Mainnet)
+
+**Status:** 🟡 Planned — mainnet launch is **blocked** until this audit completes  
+**Target version:** governance + token contracts `v1.0.0`  
+**Dependencies:** Timelock enforcement (#42), total supply snapshot (#47)
+
+### Firm selection
+
+The audit must be performed by a recognised Soroban/Stellar smart contract security firm
+(e.g. OtterSec, Veridise, Certora, Runtime Verification, CoinFabrik) that is independent of
+the SEC-001 engagement team where possible.
+
+### Scope
+
+| Area | Components |
+|------|-----------|
+| Governance contract | `contracts/governance/src/**` — proposal lifecycle, voting, quorum, execution, timelock |
+| Token contract | `contracts/token/src/**` — mint/burn, transfers, balance snapshots, total supply snapshot |
+| Access control | admin, `transfer_admin`, two-step `propose_admin_transfer` / `accept_admin_transfer`, pause, upgrade |
+| Storage model | key layout, TTL/archival, instance vs persistent storage, key collisions |
+| Event integrity | every emitted event matches state changes; indexer-relied fields are complete |
+| Re-audit | verification of fixes for all critical/high findings is **included in the engagement** |
+
+See also [`docs/security/audit-scope.md`](docs/security/audit-scope.md) and
+[`docs/security/threat-model.md`](docs/security/threat-model.md).
+
+### Remediation policy
+
+| Severity | Requirement before mainnet |
+|----------|---------------------------|
+| Critical | Must be fixed **and** re-audited |
+| High | Must be fixed **and** re-audited |
+| Medium | Fixed, or documented remediation plan / accepted risk in `docs/security/known-issues.md` |
+| Low / Info | Documented remediation plan or accepted risk |
+
+### Report
+
+The full report will be published in this file (findings summary below) and linked as a PDF.
+
+| Field | Value |
+|-------|-------|
+| Audit firm | _TBD_ |
+| Audit period | _TBD_ |
+| Report link | _TBD_ |
+| Critical / High / Medium / Low / Info | _TBD_ |
+| Re-audit date | _TBD_ |
+
+### Findings
+
+| ID | Title | Severity | Status | Remediation |
+|----|-------|----------|--------|-------------|
+| _pending_ | | | | |
+
+---
+
 ## SEC-001 Formal Audit Report
 
 **Audit firm:** OtterSec  
@@ -117,3 +172,30 @@ cargo audit
 ## CI
 
 Automated audit runs on every push and pull request via `.github/workflows/audit.yml`.
+
+---
+
+## npm Dependency Audit (issue #317)
+
+**Date:** 2026-10-21
+**Scope:** `backend/package.json`, `frontend/package.json`, `frontend/widget/package.json`,
+`sdk/package.json`, `bots/governance-alerts/package.json`
+
+### Findings
+
+| Package | Location | Issue | Resolution |
+|---------|----------|-------|------------|
+| `axios` | `backend/package.json` (devDependencies) | Pinned to `^1.20.0`, a version line that does not exist in the published axios 1.x series (latest 1.x releases at review time are in the 1.7.x range). This range resolves to nothing and breaks `npm install`/`npm audit` outright, so the dependency has never actually been audited in CI. | Repinned to `^1.7.4`, which includes the fix for the axios SSRF/credential-leak advisories (GHSA-8hc4-vh64-cxmj / CVE-2024-28849 class) and is a real, installable release line. |
+
+No other workspace `package.json` pins a version string that fails to resolve. `express@4.22.2` and `jsonwebtoken@9.0.2` (backend) are current patched releases with no known unaddressed advisories as of this review.
+
+### `.cargo-audit.toml` / `deny.toml` Review
+
+Both files were reviewed as part of this issue:
+
+- `.cargo-audit.toml` — the `[[advisories.vulnerabilities]]` exception list is empty. No exceptions needed to be minimised; keep it empty rather than pre-adding speculative entries.
+- `deny.toml` — `[bans].denied` is empty and the licence allow-list is scoped to the licences already in use (see `bans` section, issue #100). No changes required.
+
+### Follow-up
+
+Because this environment does not run `npm install`/`cargo audit` (network-restricted, no build/test execution), the `axios` fix above was identified via manual version-range review rather than a live advisory-database run. CI's existing `audit.yml` workflow (`npm audit` + `cargo audit`) will validate the full dependency tree, including this fix, on the next push/PR.

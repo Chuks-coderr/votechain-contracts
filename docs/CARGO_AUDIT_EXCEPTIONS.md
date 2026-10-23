@@ -108,3 +108,30 @@ For security-related questions:
 1. **Report vulnerabilities**: See [SECURITY.md](../SECURITY.md)
 2. **Open an issue**: Use the `security` label
 3. **Contact**: security@votechain.dev
+
+## Licence Compliance Exceptions
+
+Licence compliance is enforced in CI by `.github/workflows/licence-check.yml`:
+
+- **Rust:** `cargo deny check licenses`, configured in `deny.toml`
+- **Node.js:** `license-checker --production` in `frontend/`
+
+**Approved licences:** MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, MPL-2.0
+(plus permissive equivalents such as Unicode-3.0, Zlib and CC0-1.0).
+**Denied licences:** GPL-2.0, GPL-3.0, AGPL-3.0 — CI fails if any dependency uses them.
+
+### Adding a licence exception
+
+1. Confirm with maintainers that the dependency's licence is acceptable for its use
+   (e.g. build-time only, not distributed).
+2. Add a scoped entry to `exceptions` in `deny.toml`:
+   ```toml
+   exceptions = [
+     { allow = ["LICENSE-ID"], crate = "crate-name" },
+   ]
+   ```
+3. Record it in the table below with a justification and review date.
+
+| Crate / package | Licence | Justification | Added | Review by |
+|-----------------|---------|---------------|-------|-----------|
+| _none_          |         |               |       |           |

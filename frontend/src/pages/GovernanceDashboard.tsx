@@ -1,3 +1,17 @@
+// Copyright 2024 VoteChain Contributors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 import React, { useEffect, useRef, useState } from "react";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -11,33 +25,46 @@ type Stats = {
   participationOverTime: { date: string; rate: number }[];
   topVoters: VoterStat[];
   avgQuorumAchievement: number;
+  /** unique voters / total token holders, per proposal id (issue #104) */
+  participationRateByProposal: Record<string, number>;
+  /** passed / finalised proposals, rolling 30 days (issue #104) */
+  passRate: number;
+  /** average(total_votes / quorum) across all proposals (issue #104) */
+  avgQuorumFillRate: number;
+  /** addresses that voted on > 50% of proposals (issue #104) */
+  voterRetention: string[];
 };
 
-// ── Mock data fetcher (replace with real API calls) ────────────────────────
+/** Shape returned by GET /api/governance/analytics (backend/src/routes/analytics.ts). */
+interface GovernanceAnalyticsResponse {
+  participation_rate: Record<string, number>;
+  pass_rate: number;
+  avg_quorum_fill_rate: number;
+  voter_retention: string[];
+  by_state: Record<ProposalState, number>;
+  computed_at: string;
+}
+
+// ── Real data fetcher (issue #104) ──────────────────────────────────────────
 
 async function fetchStats(): Promise<Stats> {
-  // In production, replace with: fetch('/api/governance/stats')
+  const res = await fetch("/api/governance/analytics");
+  if (!res.ok) {
+    throw new Error(`Failed to fetch governance analytics: ${res.status}`);
+  }
+  const analytics: GovernanceAnalyticsResponse = await res.json();
+
   return {
-    byState: { Active: 3, Passed: 12, Rejected: 5, Executed: 10, Cancelled: 2 },
-    participationOverTime: [
-      { date: "2026-01", rate: 42 },
-      { date: "2026-02", rate: 55 },
-      { date: "2026-03", rate: 61 },
-      { date: "2026-04", rate: 48 },
-    ],
-    topVoters: [
-      { address: "GABC...1234", total_weight: 9_800_000 },
-      { address: "GDEF...5678", total_weight: 7_200_000 },
-      { address: "GHIJ...9012", total_weight: 5_500_000 },
-      { address: "GKLM...3456", total_weight: 4_100_000 },
-      { address: "GNOP...7890", total_weight: 3_800_000 },
-      { address: "GQRS...1234", total_weight: 3_200_000 },
-      { address: "GTUV...5678", total_weight: 2_900_000 },
-      { address: "GWXY...9012", total_weight: 2_400_000 },
-      { address: "GZAB...3456", total_weight: 1_900_000 },
-      { address: "GCDE...7890", total_weight: 1_500_000 },
-    ],
-    avgQuorumAchievement: 73,
+    byState: analytics.by_state,
+    participationOverTime: Object.entries(analytics.participation_rate).map(
+      ([proposalId, rate]) => ({ date: proposalId, rate: Math.round(rate * 100) })
+    ),
+    topVoters: analytics.voter_retention.map((address) => ({ address, total_weight: 0 })),
+    avgQuorumAchievement: Math.round(analytics.avg_quorum_fill_rate * 100),
+    participationRateByProposal: analytics.participation_rate,
+    passRate: analytics.pass_rate,
+    avgQuorumFillRate: analytics.avg_quorum_fill_rate,
+    voterRetention: analytics.voter_retention,
   };
 }
 
@@ -145,9 +172,21 @@ function LineChart({ data }: { data: { date: string; rate: number }[] }) {
   );
 }
 
+// ── Stat tile (issue #104 metrics) ──────────────────────────────────────────
+
+function StatTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={cardStyle}>
+      <div style={{ fontSize: 28, fontWeight: 700, color: "#66bb6a" }}>{value}</div>
+      <div style={{ fontSize: 12, color: "#aaa", marginTop: 4 }}>{label}</div>
+    </div>
+  );
+}
+
 // ── Dashboard page ─────────────────────────────────────────────────────────
 
-const REFRESH_MS = 5 * 60 * 1000; // 5 minutes
+// Issue #104: dashboard data must refresh every 60 seconds.
+const REFRESH_MS = 60 * 1000;
 
 export function GovernanceDashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
@@ -184,9 +223,14 @@ export function GovernanceDashboard() {
       <h1 style={{ marginBottom: 4 }}>Governance Dashboard</h1>
       {lastUpdated && (
         <p style={{ fontSize: 12, color: "#888", marginBottom: 24 }}>
-          Last updated: {lastUpdated.toLocaleTimeString()} · refreshes every 5 min
+          Last updated: {lastUpdated.toLocaleTimeString()} · refreshes every 60s
         </p>
       )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16, marginBottom: 24 }}>
+        <StatTile label="30-day pass rate" value={`${Math.round(stats.passRate * 100)}%`} />
+        <StatTile label="Retained voters (>50% of proposals)" value={String(stats.voterRetention.length)} />
+      </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 24 }}>
 

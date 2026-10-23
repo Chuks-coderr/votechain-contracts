@@ -1,9 +1,15 @@
 # SEC-009 — Re-initialization Guard
 
-**Component:** `contracts/governance/src/lib.rs` → `initialize`  
-**Found:** 2026-04-24  
-**Severity:** Critical  
-**Status:** ✅ Fixed
+| Field | Value |
+|---|---|
+| Record type | Security finding |
+| Date | 2026-04-24 |
+| Status | Fixed |
+| Severity | Critical |
+| Affected components | `contracts/governance/src/lib.rs` → `initialize` |
+| Reporter / reviewer | Not recorded |
+
+Format: [SEC template](SEC-TEMPLATE.md).
 
 ---
 
@@ -60,6 +66,17 @@ Three tests added in `contracts/governance/src/test.rs` under the `SEC-009` bloc
 | `test_reinit_by_original_admin_reverts` | Original admin | Panics (AlreadyInitialized) |
 | `test_reinit_by_new_address_reverts` | Arbitrary new address | Panics (AlreadyInitialized) |
 | `test_reinit_by_zero_address_reverts` | Zero address | Panics (AlreadyInitialized) |
+
+### Network isolation tests (`security_regression_tests.rs` — issue #322)
+
+Two additional tests verify that the `VotingToken` address cannot be swapped
+via re-initialisation and that the contract remains isolated from the
+alternative token after the attempt:
+
+| Test | What it verifies |
+|---|---|
+| `sec_009_network_isolation_voting_token_immutable` | Re-init with a different token reverts; `get_config` still reports the original token; vote weight comes from the original token, not the alt token |
+| `sec_009_network_isolation_repeated_reinit_preserves_config` | Three re-init attempts with varying params all revert; every config field (`admin`, `voting_token`, `min_proposal_balance`, `proposal_cooldown`, `restrict_admin_vote`, `timelock_duration`, `min_duration`, `max_duration`) is unchanged |
 
 ---
 

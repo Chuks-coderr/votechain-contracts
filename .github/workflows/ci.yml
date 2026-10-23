@@ -15,32 +15,52 @@ jobs:
     name: License Headers
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Check Apache 2.0 license header on all .rs files
         run: |
           missing=()
           while IFS= read -r -d '' file; do
-            if ! head -3 "$file" | grep -q "Apache License\|Apache-2.0\|Licensed under the Apache"; then
+            if ! head -5 "$file" | grep -q "Apache License\|Apache-2.0\|Licensed under the Apache"; then
               missing+=("$file")
             fi
-          done < <(find contracts -name "*.rs" -print0)
+          done < <(find contracts -name "*.rs" -print0; git ls-files -z '*.ts' '*.tsx' '*.sh')
           if [ ${#missing[@]} -gt 0 ]; then
             echo "ERROR: Missing Apache 2.0 license header in:"
             printf '  %s\n' "${missing[@]}"
             exit 1
           fi
-          echo "All .rs files have the license header."
+          echo "All .rs, .ts, .tsx and .sh files have the license header."
+
+  errors-doc-check:
+    name: Error Reference Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Verify docs/errors.md documents every ContractError variant
+        run: bash scripts/check-errors-doc.sh
+
+  secret-scan:
+    name: Secret Scanning (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   test:
     name: Build & Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
           components: rustfmt, clippy
-      - uses: actions/cache@v4
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             ~/.cargo/registry
@@ -58,11 +78,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
-      - uses: actions/cache@v4
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             ~/.cargo/registry
@@ -76,22 +96,36 @@ jobs:
         run: cargo install --locked cargo-llvm-cov
       - name: Generate coverage report
         run: |
-          cargo llvm-cov --all-features --workspace \
+          cargo llvm-cov --all-features --workspace --branch \
             --lcov --output-path lcov.info
-      - name: Enforce 80% line coverage threshold
+      - name: Enforce coverage thresholds
+        # votechain-governance manages financial decisions, so it requires
+        # 90% line and 85% branch coverage; other packages require 80% lines.
         run: |
-          PACKAGES=(votechain-governance votechain-token)
-          for pkg in "${PACKAGES[@]}"; do
-            cargo llvm-cov --package "$pkg" --all-features --summary-only 2>&1 | tee "${pkg}-coverage-summary.txt"
-            LINE_PCT=$(grep -oP 'Lines\s*:\s*\K[0-9]+\.[0-9]+' "${pkg}-coverage-summary.txt" | head -1)
-            echo "$pkg line coverage: ${LINE_PCT}%"
-            awk -v pct="$LINE_PCT" -v pkg="$pkg" 'BEGIN { if (pct+0 < 80) { print pkg " coverage " pct "% is below 80% threshold"; exit 1 } }'
+          declare -A LINE_MIN=([votechain-governance]=90 [votechain-token]=80)
+          declare -A BRANCH_MIN=([votechain-governance]=85)
+          FAIL=0
+          for pkg in votechain-governance votechain-token; do
+            cargo llvm-cov --package "$pkg" --all-features --branch --summary-only --json \
+              --output-path "${pkg}-coverage.json"
+            cargo llvm-cov report --package "$pkg" --branch --summary-only | tee "${pkg}-coverage-summary.txt"
+            LINE_PCT=$(jq '.data[0].totals.lines.percent' "${pkg}-coverage.json")
+            BRANCH_PCT=$(jq '.data[0].totals.branches.percent // 0' "${pkg}-coverage.json")
+            echo "$pkg: lines ${LINE_PCT}% (min ${LINE_MIN[$pkg]}%), branches ${BRANCH_PCT}%"
+            echo "| $pkg | ${LINE_PCT}% | ${BRANCH_PCT}% |" >> coverage-table.md
+            if awk -v p="$LINE_PCT" -v m="${LINE_MIN[$pkg]}" 'BEGIN{exit !(p+0<m)}'; then
+              echo "::error::$pkg line coverage ${LINE_PCT}% is below ${LINE_MIN[$pkg]}% threshold"; FAIL=1
+            fi
+            if [ -n "${BRANCH_MIN[$pkg]:-}" ] && awk -v p="$BRANCH_PCT" -v m="${BRANCH_MIN[$pkg]}" 'BEGIN{exit !(p+0<m)}'; then
+              echo "::error::$pkg branch coverage ${BRANCH_PCT}% is below ${BRANCH_MIN[$pkg]}% threshold"; FAIL=1
+            fi
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-report
           path: |
             lcov.info
+            *-coverage.json
             *-coverage-summary.txt
 
   security-audit:
@@ -99,9 +133,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             ~/.cargo/registry
@@ -123,11 +157,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      - uses: actions/cache@v4
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             ~/.cargo/registry
@@ -137,7 +171,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-wasm-
             ${{ runner.os }}-cargo-
+      - name: Cache Stellar CLI binary
+        id: stellar-cli-cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cargo/bin/stellar
+          key: ${{ runner.os }}-stellar-cli-${{ env.STELLAR_CLI_VERSION }}
       - name: Install Stellar CLI
+        if: steps.stellar-cli-cache.outputs.cache-hit != 'true'
         run: cargo install --locked stellar-cli@${{ env.STELLAR_CLI_VERSION }}
       - run: stellar contract build
       - name: Check WASM binary sizes
@@ -166,25 +207,178 @@ jobs:
             echo "ERROR: token.wasm ($tok_size bytes) exceeds 50 KB limit" >&2
             exit 1
           fi
-      - uses: actions/upload-artifact@v4
+      - name: Compare WASM sizes against recorded baseline
+        run: |
+          BASELINE=docs/wasm-size-history.json
+          gov_size=$(stat -c%s target/wasm32-unknown-unknown/release/votechain_governance.wasm)
+          tok_size=$(stat -c%s target/wasm32-unknown-unknown/release/votechain_token.wasm)
+
+          if [ -f "$BASELINE" ] && [ "$(jq 'length' "$BASELINE")" -gt 0 ]; then
+            base_gov=$(jq '.[-1].governance' "$BASELINE")
+            base_tok=$(jq '.[-1].token' "$BASELINE")
+          else
+            base_gov=$gov_size
+            base_tok=$tok_size
+          fi
+
+          gov_delta_pct=$(awk -v c="$gov_size" -v b="$base_gov" 'BEGIN { if (b==0) print 0; else printf "%.2f", ((c-b)/b)*100 }')
+          tok_delta_pct=$(awk -v c="$tok_size" -v b="$base_tok" 'BEGIN { if (b==0) print 0; else printf "%.2f", ((c-b)/b)*100 }')
+
+          jq -n \
+            --argjson gov_size "$gov_size" --argjson tok_size "$tok_size" \
+            --argjson base_gov "$base_gov" --argjson base_tok "$base_tok" \
+            --arg gov_delta_pct "$gov_delta_pct" --arg tok_delta_pct "$tok_delta_pct" \
+            '{governance: {current: $gov_size, base: $base_gov, delta_pct: ($gov_delta_pct|tonumber)},
+              token: {current: $tok_size, base: $base_tok, delta_pct: ($tok_delta_pct|tonumber)}}' \
+            > wasm-size-history/delta.json
+          cat wasm-size-history/delta.json
+
+          alert=0
+          awk -v d="$gov_delta_pct" 'BEGIN { exit !(d > 5) }' && { echo "::warning::governance.wasm grew ${gov_delta_pct}% vs baseline (>5% threshold)"; alert=1; }
+          awk -v d="$tok_delta_pct" 'BEGIN { exit !(d > 5) }' && { echo "::warning::token.wasm grew ${tok_delta_pct}% vs baseline (>5% threshold)"; alert=1; }
+          exit 0
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wasm-size-history
-          path: wasm-size-history/sizes.log
-      - uses: actions/upload-artifact@v4
+          path: wasm-size-history/*
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wasm-contracts
           path: target/wasm32-unknown-unknown/release/*.wasm
+
+  wasm-size-comment:
+    name: WASM Size PR Comment
+    runs-on: ubuntu-latest
+    needs: build-wasm
+    if: github.event_name == 'pull_request'
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: wasm-size-history
+          path: wasm-size-history
+      - name: Post or update PR comment with size delta
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          script: |
+            const fs = require('fs');
+            const delta = JSON.parse(fs.readFileSync('wasm-size-history/delta.json', 'utf8'));
+            const marker = '<!-- wasm-size-report -->';
+
+            const fmt = (b) => `${(b / 1024).toFixed(2)} KB`;
+            const row = (name, d) => {
+              const flag = d.delta_pct > 5 ? ' :warning: **>5% growth**' : '';
+              return `| ${name} | ${fmt(d.base)} | ${fmt(d.current)} | ${d.delta_pct > 0 ? '+' : ''}${d.delta_pct}%${flag} |`;
+            };
+
+            const body = [
+              marker,
+              '### WASM size report',
+              '',
+              '| Contract | Base | PR | Delta |',
+              '|---|---|---|---|',
+              row('governance.wasm', delta.governance),
+              row('token.wasm', delta.token),
+              '',
+              '_Base sizes are read from `docs/wasm-size-history.json` on `main`. Growth over 5% in a single PR is flagged above._',
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+  wasm-size-record:
+    name: Record WASM Size History
+    runs-on: ubuntu-latest
+    needs: build-wasm
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: wasm-size-history
+          path: wasm-size-history
+      - name: Append entry and regenerate size history doc
+        run: |
+          BASELINE=docs/wasm-size-history.json
+          [ -f "$BASELINE" ] || echo '[]' > "$BASELINE"
+
+          gov_size=$(jq '.governance.current' wasm-size-history/delta.json)
+          tok_size=$(jq '.token.current' wasm-size-history/delta.json)
+          date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          sha="${GITHUB_SHA::7}"
+
+          tmp=$(mktemp)
+          jq --argjson gov "$gov_size" --argjson tok "$tok_size" --arg date "$date" --arg sha "$sha" \
+            '. + [{date: $date, sha: $sha, governance: $gov, token: $tok}]' \
+            "$BASELINE" > "$tmp"
+          mv "$tmp" "$BASELINE"
+
+          {
+            echo "# WASM Size History"
+            echo
+            echo "Auto-generated by \`.github/workflows/ci.yml\` (\`wasm-size-record\` job) on every push to \`main\`."
+            echo "Raw data lives in [\`wasm-size-history.json\`](wasm-size-history.json)."
+            echo
+            echo '```mermaid'
+            echo "xychart-beta"
+            echo "  title \"WASM binary size over time (bytes)\""
+            echo "  x-axis [$(jq -r '[.[].sha] | join(", ")' "$BASELINE")]"
+            echo "  y-axis \"bytes\""
+            echo "  line [$(jq -r '[.[].governance] | join(", ")' "$BASELINE")]"
+            echo "  line [$(jq -r '[.[].token] | join(", ")' "$BASELINE")]"
+            echo '```'
+            echo
+            echo "| Date | Commit | governance.wasm | token.wasm |"
+            echo "|------|--------|------------------|------------|"
+            jq -r '.[] | "| \(.date) | \(.sha) | \(.governance) B | \(.token) B |"' "$BASELINE"
+          } > docs/wasm-size-history.md
+      - name: Commit updated size history
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/wasm-size-history.json docs/wasm-size-history.md
+          if git diff --cached --quiet; then
+            echo "No size history changes to commit."
+          else
+            git commit -m "chore: record WASM size history [skip ci]"
+            git push origin HEAD:main
+          fi
 
   wasm-validity:
     name: WASM Validity Tests
     runs-on: ubuntu-latest
     needs: build-wasm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      - uses: actions/cache@v4
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             ~/.cargo/registry
@@ -194,7 +388,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-wasm-
             ${{ runner.os }}-cargo-
+      - name: Cache Stellar CLI binary
+        id: stellar-cli-cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cargo/bin/stellar
+          key: ${{ runner.os }}-stellar-cli-${{ env.STELLAR_CLI_VERSION }}
       - name: Install Stellar CLI
+        if: steps.stellar-cli-cache.outputs.cache-hit != 'true'
         run: cargo install --locked stellar-cli@${{ env.STELLAR_CLI_VERSION }}
       - name: Run WASM validity tests
         run: bash scripts/test_wasm.sh

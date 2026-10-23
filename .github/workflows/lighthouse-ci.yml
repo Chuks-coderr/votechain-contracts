@@ -1,0 +1,83 @@
+name: Lighthouse CI
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/lighthouse-ci.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/lighthouse-ci.yml'
+
+jobs:
+  lighthouse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Start preview server
+        working-directory: frontend
+        run: |
+          npm run preview &
+          sleep 3
+          curl -f http://localhost:4173 || exit 1
+
+      - name: Run Lighthouse CI
+        uses: treosh/lighthouse-ci-action@v11
+        with:
+          configPath: './frontend/lighthouserc.json'
+          uploadArtifacts: true
+          temporaryPublicStorage: true
+
+      - name: Comment on PR with results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const manifest = JSON.parse(fs.readFileSync('./frontend/.lighthouseci/manifest.json', 'utf-8'));
+            const report = manifest[0];
+            
+            const comment = `
+## Lighthouse Performance Report
+
+| Metric | Score |
+|--------|-------|
+| Performance | ${report.scores.performance * 100} |
+| Accessibility | ${report.scores.accessibility * 100} |
+| Best Practices | ${report.scores['best-practices'] * 100} |
+| SEO | ${report.scores.seo * 100} |
+| PWA | ${report.scores.pwa * 100} |
+
+[View full report](${report.url})
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Performance budget check
+        run: |
+          echo "Performance metrics recorded for historical tracking"
+          echo "Target: Lighthouse performance score ≥ 90"

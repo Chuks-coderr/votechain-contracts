@@ -1,12 +1,359 @@
 openapi: 3.1.0
 info:
-  title: VoteChain Indexer API
-  version: 0.1.0
-  description: REST API backed by an event indexer for efficient proposal and vote queries.
+  title: VoteChain API
+  version: 1.0.0
+  description: |
+    Complete REST API reference for VoteChain — decentralized on-chain governance on Stellar.
+
+    ## Overview
+
+    The VoteChain API is served by the Node.js backend (`backend/`) and exposes two route groups:
+
+    | Group | Base path | Description |
+    |-------|-----------|-------------|
+    | Proposals | `/api/proposals` | Proposal list, detail, and cache invalidation |
+    | Metrics   | `/api/metrics`   | Redis cache hit/miss counters |
+
+    All endpoints return JSON. Error responses use the `ApiError` schema.
+
+    ## Authentication
+
+    Third-party integrators: see the [API Integration Guide](../docs/api-integrator-guide.md)
+    for key provisioning, request headers, rate-limit handling, and authentication errors.
+
+    The current API does **not** require authentication for read-only endpoints (`GET`).
+    The cache-invalidation endpoint (`POST /api/proposals/invalidate`) should be
+    protected at the network/infra level (e.g., internal-only ingress or a shared
+    secret header). No token is required today, but callers should be prepared for
+    a future `Authorization: Bearer <token>` requirement on mutating endpoints.
+
+    ## Rate Limiting
+
+    No rate limiting is enforced at the application layer in the current release.
+    Deploy behind a reverse proxy (nginx, Cloudflare, etc.) to add rate limiting.
+
+    ## Caching
+
+    Proposal responses are cached in Redis:
+    - `GET /api/proposals` — 30-second TTL
+    - `GET /api/proposals/:id` — 10-second TTL
+
+    The `X-Cache` response header indicates `HIT` or `MISS`.
+
+  contact:
+    name: VoteChain Contributors
+    url: https://github.com/veracindarella/votechain-contracts/issues
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:3001
+    description: Local development server
+  - url: https://api.votechain.dev
+    description: Production server (example)
+
+tags:
+  - name: proposals
+    description: Governance proposal endpoints
+  - name: metrics
+    description: Internal observability endpoints
+
 paths:
+  # ─────────────────────────────────────────────────────────────────
+  # Proposal endpoints (Node.js backend, /api/proposals)
+  # ─────────────────────────────────────────────────────────────────
+
+  /api/proposals:
+    get:
+      operationId: listProposals
+      summary: List proposals
+      description: |
+        Returns a paginated list of governance proposals.
+        Results are cached for **30 seconds** in Redis.
+      tags: [proposals]
+      parameters:
+        - name: cursor
+          in: query
+          description: |
+            Last seen proposal ID (exclusive). Omit to fetch the first page.
+            Pass the `next_cursor` value from the previous response to advance.
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+          example: 42
+        - name: limit
+          in: query
+          description: Maximum number of proposals to return. Default 20, capped at 100.
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          example: 20
+        - name: state
+          in: query
+          description: Filter proposals by lifecycle state.
+          required: false
+          schema:
+            $ref: '#/components/schemas/ProposalState'
+          example: active
+      responses:
+        '200':
+          description: Paginated list of proposals.
+          headers:
+            X-Cache:
+              description: Whether the response was served from Redis cache.
+              schema:
+                type: string
+                enum: [HIT, MISS]
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProposalSummary'
+                  pagination:
+                    type: object
+                    properties:
+                      limit:
+                        type: integer
+                        example: 20
+                      has_more:
+                        type: boolean
+                        description: Whether additional results exist after this page.
+                        example: true
+                      next_cursor:
+                        type: string
+                        description: |
+                          Pass this value as the `cursor` query parameter to fetch the
+                          next page. Absent when `has_more` is false.
+                        example: "38"
+                    required: [limit, has_more]
+                required: [data, pagination]
+              examples:
+                empty:
+                  summary: No proposals yet
+                  value:
+                    data: []
+                    pagination:
+                      limit: 20
+                      has_more: false
+                single:
+                  summary: One active proposal
+                  value:
+                    data:
+                      - id: 1
+                        title: "Increase Treasury Allocation"
+                        state: active
+                        quorum: 5000000
+                        start_time: 1700000000
+                        end_time: 1700604800
+                    pagination:
+                      limit: 20
+                      has_more: false
+        '400':
+          description: Invalid query parameters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example:
+                code: INVALID_PARAM
+                message: "limit must be between 1 and 50"
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example:
+                code: INTERNAL_ERROR
+                message: "Unexpected error"
+
+  /api/proposals/{id}:
+    get:
+      operationId: getProposal
+      summary: Get proposal details
+      description: |
+        Returns full details for a single governance proposal, including vote tallies.
+        Response is cached for **10 seconds** in Redis.
+      tags: [proposals]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Numeric proposal ID.
+          schema:
+            type: integer
+            minimum: 1
+          example: 42
+      responses:
+        '200':
+          description: Full proposal detail.
+          headers:
+            X-Cache:
+              description: Whether the response was served from Redis cache.
+              schema:
+                type: string
+                enum: [HIT, MISS]
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProposalDetail'
+              example:
+                id: 42
+                proposer: "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+                title: "Increase Treasury Allocation"
+                description: "Allocate 10M tokens from the treasury to fund development."
+                quorum: 5000000
+                votes_yes: 3000000
+                votes_no: 500000
+                votes_abstain: 1500000
+                start_time: 1700000000
+                end_time: 1700604800
+                state: passed
+                execute_after: 1700691200
+        '404':
+          description: Proposal not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example:
+                code: NOT_FOUND
+                message: "Proposal 42 not found"
+        '400':
+          description: Invalid proposal ID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example:
+                code: INVALID_PARAM
+                message: "id must be a positive integer"
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /api/proposals/invalidate:
+    post:
+      operationId: invalidateProposalCache
+      summary: Invalidate proposal cache
+      description: |
+        Instructs the backend to evict stale proposal data from Redis.
+        Called by the event indexer when new on-chain events are observed.
+
+        - Without a body (or `id` omitted): clears the **proposal list** cache entry.
+        - With `id`: clears both the list cache and the specific item cache.
+
+        **Access control:** This endpoint should be reachable only from internal
+        services (e.g., the event indexer). Restrict access at the network or proxy
+        layer. A future release may require a shared-secret header.
+      tags: [proposals]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: string
+                  description: Proposal ID to invalidate. Omit to invalidate only the list cache.
+                  example: "42"
+            examples:
+              invalidate_list:
+                summary: Invalidate only the list cache
+                value: {}
+              invalidate_item:
+                summary: Invalidate a specific proposal and the list
+                value:
+                  id: "42"
+      responses:
+        '200':
+          description: Cache invalidation acknowledged.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    description: Always `true` on success.
+                  invalidated:
+                    type: string
+                    description: The item invalidated, or `"list"` when no ID was provided.
+                required: [ok, invalidated]
+              examples:
+                list_cleared:
+                  summary: List cache invalidated
+                  value:
+                    ok: true
+                    invalidated: "list"
+                item_cleared:
+                  summary: Specific item cache invalidated
+                  value:
+                    ok: true
+                    invalidated: "42"
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  # ─────────────────────────────────────────────────────────────────
+  # Metrics endpoint (Node.js backend, /api/metrics)
+  # ─────────────────────────────────────────────────────────────────
+
+  /api/metrics/cache:
+    get:
+      operationId: getCacheMetrics
+      summary: Get Redis cache metrics
+      description: |
+        Returns in-memory hit/miss counters for the Redis proposal cache.
+        Counters are reset when the process restarts.
+      tags: [metrics]
+      responses:
+        '200':
+          description: Cache hit/miss statistics.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CacheMetrics'
+              example:
+                hits: 1024
+                misses: 32
+                hitRate: 0.97
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  # ─────────────────────────────────────────────────────────────────
+  # Indexer API endpoints (/proposals, /proposals/{id}/votes, etc.)
+  # These are served by the Rust indexer, not the Node.js backend.
+  # ─────────────────────────────────────────────────────────────────
+
   /proposals:
     get:
-      summary: List proposals
+      operationId: indexerListProposals
+      summary: List proposals (indexer)
+      description: |
+        Served by the Rust event indexer (`indexer/`).
+        Returns a page of proposals sourced from the indexer database.
+      tags: [proposals]
       parameters:
         - name: offset
           in: query
@@ -24,20 +371,29 @@ paths:
         - name: state
           in: query
           schema:
-            type: string
-            enum: [active, passed, rejected, executed, cancelled]
+            $ref: '#/components/schemas/ProposalState'
       responses:
         '200':
-          description: A page of proposals
+          description: A page of proposals.
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: '#/components/schemas/ProposalSummary'
+        '400':
+          description: Invalid query parameters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
   /proposals/{id}:
     get:
-      summary: Get full proposal details
+      operationId: indexerGetProposal
+      summary: Get full proposal details (indexer)
+      description: Served by the Rust event indexer.
+      tags: [proposals]
       parameters:
         - name: id
           in: path
@@ -46,20 +402,24 @@ paths:
             type: integer
       responses:
         '200':
-          description: Proposal detail
+          description: Full proposal detail.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProposalDetail'
         '404':
-          description: Proposal not found
+          description: Proposal not found.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiError'
+
   /proposals/{id}/votes:
     get:
-      summary: List votes for a proposal
+      operationId: indexerGetProposalVotes
+      summary: List votes for a proposal (indexer)
+      description: Returns all vote records for the given proposal.
+      tags: [proposals]
       parameters:
         - name: id
           in: path
@@ -68,106 +428,208 @@ paths:
             type: integer
       responses:
         '200':
-          description: Vote records for a proposal
+          description: Vote records for the proposal.
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: '#/components/schemas/VoteRecord'
+              example:
+                - proposal_id: 42
+                  voter: "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+                  vote: yes
+                  weight: 3000000
         '404':
-          description: Proposal not found
+          description: Proposal not found.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiError'
+
   /voters/{address}/votes:
     get:
-      summary: Get vote history for a voter
+      operationId: indexerGetVoterHistory
+      summary: Get vote history for a voter (indexer)
+      description: Returns all votes cast by a given Stellar address.
+      tags: [proposals]
       parameters:
         - name: address
           in: path
           required: true
+          description: Stellar account address (G... format).
           schema:
             type: string
+            pattern: '^G[A-Z2-7]{55}$'
+          example: "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
       responses:
         '200':
-          description: Voter vote history
+          description: All votes cast by the voter.
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: '#/components/schemas/VoteRecord'
+        '400':
+          description: Invalid Stellar address format.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
 components:
   schemas:
+    # ── Enumerations ──────────────────────────────────────────────
+
     ProposalState:
       type: string
+      description: Lifecycle state of a governance proposal.
       enum: [active, passed, rejected, executed, cancelled]
+
+    VoteChoice:
+      type: string
+      description: The vote cast by a voter.
+      enum: [yes, no, abstain]
+
+    # ── Core data models ──────────────────────────────────────────
+
     ProposalSummary:
       type: object
+      description: Lightweight proposal representation used in list responses.
       properties:
         id:
           type: integer
+          description: Unique numeric proposal ID.
+          example: 42
         title:
           type: string
+          description: Proposal title (1–128 characters).
+          example: "Increase Treasury Allocation"
         state:
           $ref: '#/components/schemas/ProposalState'
         quorum:
           type: integer
+          description: Minimum total vote weight required for the proposal to pass.
+          example: 5000000
         start_time:
           type: integer
+          description: Unix timestamp when voting opens.
+          example: 1700000000
         end_time:
           type: integer
+          description: Unix timestamp when voting closes.
+          example: 1700604800
       required: [id, title, state, quorum, start_time, end_time]
+
     ProposalDetail:
       type: object
+      description: Full proposal state including vote tallies and metadata.
       properties:
         id:
           type: integer
+          description: Unique numeric proposal ID.
+          example: 42
         proposer:
           type: string
+          description: Stellar address of the account that created the proposal.
+          example: "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
         title:
           type: string
+          description: Proposal title (1–128 characters).
+          example: "Increase Treasury Allocation"
         description:
           type: string
+          description: Proposal description (1–1024 characters).
+          example: "Allocate 10M tokens from the treasury to fund development."
         quorum:
           type: integer
+          description: Minimum total vote weight required to pass.
+          example: 5000000
         votes_yes:
           type: integer
+          description: Total vote weight cast as Yes.
+          example: 3000000
         votes_no:
           type: integer
+          description: Total vote weight cast as No.
+          example: 500000
         votes_abstain:
           type: integer
+          description: Total vote weight cast as Abstain. Counts toward quorum but not outcome.
+          example: 1500000
         start_time:
           type: integer
+          description: Unix timestamp when voting opens.
+          example: 1700000000
         end_time:
           type: integer
+          description: Unix timestamp when voting closes.
+          example: 1700604800
         state:
           $ref: '#/components/schemas/ProposalState'
         execute_after:
           type: integer
+          description: |
+            Earliest Unix timestamp at which a passed proposal may be executed.
+            Set to `end_time + timelock_duration` when the proposal passes.
+            `0` when no timelock is configured or the proposal has not passed.
+          example: 1700691200
       required: [id, proposer, title, description, quorum, votes_yes, votes_no, votes_abstain, start_time, end_time, state, execute_after]
-    VoteChoice:
-      type: string
-      enum: [yes, no, abstain]
+
     VoteRecord:
       type: object
+      description: A single vote cast by a voter on a proposal.
       properties:
         proposal_id:
           type: integer
+          description: ID of the proposal voted on.
+          example: 42
         voter:
           type: string
+          description: Stellar address of the voter.
+          example: "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
         vote:
           $ref: '#/components/schemas/VoteChoice'
         weight:
           type: integer
+          description: Token balance snapshot captured at vote time (the voter's voting power).
+          example: 1000000
       required: [proposal_id, voter, vote, weight]
+
+    CacheMetrics:
+      type: object
+      description: In-memory Redis cache hit/miss statistics.
+      properties:
+        hits:
+          type: integer
+          description: Number of cache hits since the last process restart.
+          example: 1024
+        misses:
+          type: integer
+          description: Number of cache misses since the last process restart.
+          example: 32
+        hitRate:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: |
+            Ratio of hits to total requests (`hits / (hits + misses)`).
+            `0` when no requests have been served.
+          example: 0.97
+      required: [hits, misses, hitRate]
+
     ApiError:
       type: object
+      description: Standard error response body.
       properties:
         code:
           type: string
+          description: Machine-readable error code.
+          example: NOT_FOUND
         message:
           type: string
+          description: Human-readable error message.
+          example: "Proposal 42 not found"
       required: [code, message]

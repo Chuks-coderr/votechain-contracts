@@ -1,0 +1,95 @@
+name: Nightly Fuzz
+
+# ── Trigger ──────────────────────────────────────────────────────────────────
+# Runs every night at 02:00 UTC and on push/PR when fuzz code changes.
+# Token-transfer harnesses added in #249.
+on:
+  schedule:
+    - cron: '0 2 * * *'   # 02:00 UTC daily
+  push:
+    paths:
+      - 'fuzz/**'
+      - '.github/workflows/fuzz-nightly.yml'
+  pull_request:
+    paths:
+      - 'fuzz/**'
+      - '.github/workflows/fuzz-nightly.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Number of fuzzing iterations per harness.  1 000 000 satisfies #249.
+  FUZZ_RUNS: 1000000
+
+jobs:
+  fuzz:
+    name: Fuzz – ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_create_proposal
+          - fuzz_cast_vote
+          - fuzz_finalise
+          - fuzz_token_transfer        # #249
+          - fuzz_token_transfer_from   # #249
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-fuzz-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-fuzz-${{ matrix.target }}-
+            ${{ runner.os }}-cargo-fuzz-
+            ${{ runner.os }}-cargo-
+
+      - name: Install cargo-fuzz
+        run: cargo install --locked cargo-fuzz
+
+      - name: Run ${{ matrix.target }} for ${{ env.FUZZ_RUNS }} iterations
+        working-directory: fuzz
+        run: |
+          cargo fuzz run ${{ matrix.target }} \
+            -- \
+            -runs=${{ env.FUZZ_RUNS }} \
+            -max_len=4096 \
+            -timeout=30 \
+            2>&1 | tee fuzz-output-${{ matrix.target }}.txt
+
+      - name: Publish fuzz results to step summary
+        if: always()
+        run: |
+          {
+            echo "## 🧪 Fuzz Results: \`${{ matrix.target }}\`"
+            echo ""
+            if grep -q "ERROR\|CRASH\|panic" fuzz/fuzz-output-${{ matrix.target }}.txt; then
+              echo "**Status:** ❌ Panic or crash detected"
+            else
+              echo "**Status:** ✅ ${{ env.FUZZ_RUNS }} iterations completed with no panics"
+            fi
+            echo ""
+            echo "### Output (last 50 lines)"
+            echo '```'
+            tail -50 fuzz/fuzz-output-${{ matrix.target }}.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-crashes-${{ matrix.target }}-${{ github.run_id }}
+          path: |
+            fuzz/artifacts/${{ matrix.target }}/
+            fuzz/fuzz-output-${{ matrix.target }}.txt
+          retention-days: 30
+          if-no-files-found: ignore
