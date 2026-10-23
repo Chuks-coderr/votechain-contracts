@@ -39,13 +39,14 @@ use storage::{
     clear_delegation, clear_pending_admin, count_active_proposals, decrement_active_proposals,
     get_admin, get_admin_transfer_expiry, get_contract_state, get_delegation, get_last_proposal,
     get_max_active_proposals, get_max_duration, get_min_duration, get_min_proposal_balance,
-    get_pending_admin, get_previous_wasm_hash, get_proposal_cooldown, get_restrict_admin_vote,
-    get_timelock_duration, get_version, get_vote_record, get_voter_snapshot, get_voting_token,
-    has_extended, has_voted, has_template, increment_active_proposals, is_initialized, is_paused,
-    load_proposal, load_template, mark_extended, mark_voted,
-    next_id, remove_template, save_proposal, save_template, save_vote_record, save_voter_snapshot,
-    set_admin, set_admin_transfer_expiry, set_contract_state, set_delegation, set_last_proposal,
-    set_max_active_proposals, set_max_duration, set_min_duration, set_min_proposal_balance,
+    get_min_quorum_bps, get_pending_admin, get_previous_wasm_hash, get_proposal_cooldown,
+    get_restrict_admin_vote, get_timelock_duration, get_version, get_vote_record,
+    get_voter_snapshot, get_voting_token, has_extended, has_voted, has_template,
+    increment_active_proposals, is_initialized, is_paused, load_proposal, load_template,
+    mark_extended, mark_voted, next_id, remove_template, save_proposal, save_template,
+    save_vote_record, save_voter_snapshot, set_admin, set_admin_transfer_expiry,
+    set_contract_state, set_delegation, set_last_proposal, set_max_active_proposals,
+    set_max_duration, set_min_duration, set_min_proposal_balance, set_min_quorum_bps,
     set_paused, set_pending_admin, set_previous_wasm_hash, set_proposal_cooldown,
     set_restrict_admin_vote, set_timelock_duration, set_version, set_voting_token,
 };
@@ -57,6 +58,11 @@ const MAX_BATCH_VOTERS: u32 = 50;
 // Maximum byte length of an optional off-chain comment hash (e.g. IPFS CID)
 // attached to a vote via `cast_vote`. See issue #103.
 const MAX_COMMENT_HASH_LEN: u32 = 64;
+/// Default minimum quorum floor in basis points (10 BPS = 0.1% of total supply).
+/// Prevents governance capture via trivially small quorum values.
+/// Configurable at `initialize` via `min_quorum_bps`; this is the default
+/// when no value is supplied (i.e. when `min_quorum_bps == 0`).
+pub const MIN_QUORUM_BPS: u32 = 10;
 
 fn quorum_is_met(total_votes: i128, quorum: i128, votes_yes: i128, votes_no: i128) -> bool {
     total_votes >= quorum && votes_yes > votes_no
@@ -128,6 +134,8 @@ impl GovernanceContract {
     ///   becoming executable. Use `0` to disable the timelock.
     /// - `max_active_proposals`: global cap on the number of simultaneously active proposals.
     ///   `0` means use the default of 50. Set to a non-zero value to override.
+    /// - `min_quorum_bps`: minimum quorum floor in basis points (e.g. 10 = 0.1% of supply).
+    ///   `0` means use the protocol default of `MIN_QUORUM_BPS` (10). Enforced by `update_quorum`.
     ///
     /// # Errors
     /// - [`ContractError::AlreadyInitialized`] if the contract has already been initialised.
@@ -143,6 +151,7 @@ impl GovernanceContract {
         restrict_admin_vote: bool,
         timelock_duration: u64,
         max_active_proposals: u64,
+        min_quorum_bps: u32,
     ) -> Result<(), ContractError> {
         // SEC-005: auth is the first operation in every privileged function.
         admin.require_auth();
@@ -169,6 +178,10 @@ impl GovernanceContract {
         // A value of 0 means "use default (50)"; non-zero values are stored explicitly.
         if max_active_proposals > 0 {
             set_max_active_proposals(&env, max_active_proposals);
+        }
+        // A value of 0 means "use protocol default (MIN_QUORUM_BPS = 10)".
+        if min_quorum_bps > 0 {
+            set_min_quorum_bps(&env, min_quorum_bps);
         }
         set_version(&env, (1, 0, 0));
         set_contract_state(&env, &ContractState::Ready);
@@ -771,6 +784,7 @@ impl GovernanceContract {
     /// - [`ContractError::InvalidAddress`] if `admin` is the zero address.
     /// - [`ContractError::NotAdmin`] if `admin` does not match the stored admin.
     /// - [`ContractError::InvalidQuorum`] if `new_quorum` is zero or negative.
+    /// - [`ContractError::QuorumBelowFloor`] if `new_quorum` is below the configured minimum quorum floor.
     /// - [`ContractError::QuorumExceedsSupply`] if `new_quorum` exceeds `proposal.supply_snapshot`.
     /// - [`ContractError::ProposalNotFound`] if `proposal_id` does not exist.
     /// - [`ContractError::ProposalNotActive`] if the proposal is not in `Active` status.
@@ -796,6 +810,14 @@ impl GovernanceContract {
         let mut proposal = load_proposal(&env, proposal_id)?;
         if proposal.state != ProposalState::Active {
             return Err(ContractError::ProposalNotActive);
+        }
+        // Issue #257: Enforce the minimum quorum floor (MIN_QUORUM_BPS).
+        // The floor is calculated from the supply snapshot taken at proposal
+        // creation so the threshold remains deterministic.
+        let bps = get_min_quorum_bps(&env) as i128;
+        let floor = (proposal.supply_snapshot * bps + 9_999) / 10_000; // ceiling division
+        if new_quorum < floor {
+            return Err(ContractError::QuorumBelowFloor);
         }
         // #56: Bound the new quorum by the supply snapshot taken at proposal creation.
         // This anchors the validation to the supply that was available when voters
@@ -1178,6 +1200,7 @@ impl GovernanceContract {
             min_duration: get_min_duration(&env),
             max_duration: get_max_duration(&env),
             version: get_version(&env),
+            min_quorum_bps: get_min_quorum_bps(&env),
         })
     }
 

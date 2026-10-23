@@ -123,6 +123,8 @@ pub enum ContractError {
     TemplateAlreadyExists = 51,
     /// 52 – Template ID is empty or exceeds the maximum allowed length
     InvalidTemplateId = 52,
+    /// 53 – New quorum is below the configured minimum quorum floor (MIN_QUORUM_BPS)
+    QuorumBelowFloor = 53,
 }
 
 /// Different types of proposals the governance contract supports.
@@ -456,6 +458,11 @@ pub enum DataKey {
     /// Key space: one entry per unique template ID string.
     /// See [`ProposalTemplate`] for the stored struct.
     ProposalTemplate(String),
+
+    /// Minimum quorum floor in basis points (instance storage).
+    /// `0` means use the default of `MIN_QUORUM_BPS` (10 = 0.1% of supply).
+    /// Set during `initialize`; enforced by `update_quorum`.
+    MinQuorumBps,
 }
 
 #[contracttype]
@@ -497,4 +504,6 @@ pub struct ContractConfig {
     pub max_duration: u64,
     /// Contract semantic version as `(major, minor, patch)`.
     pub version: (u32, u32, u32),
+    /// Minimum quorum floor in basis points (e.g. 10 = 0.1 % of total supply).
+    pub min_quorum_bps: u32,
 }

@@ -562,3 +562,18 @@ pub fn remove_template(env: &Env, template_id: &String) -> bool {
     }
     existed
 }
+
+/// Stores the minimum quorum floor (in basis points) in instance storage.
+/// `10` BPS = 0.1 % of total supply.
+pub fn set_min_quorum_bps(env: &Env, bps: u32) {
+    env.storage().instance().set(&DataKey::MinQuorumBps, &bps);
+}
+
+/// Returns the stored minimum quorum BPS floor.
+/// Defaults to `10` (0.1 % of supply) if never set.
+pub fn get_min_quorum_bps(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::MinQuorumBps)
+        .unwrap_or(10)
+}
