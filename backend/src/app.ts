@@ -22,7 +22,9 @@ import { apiKeyAuth } from "./middleware/apiKeyAuth";
 import { rateLimit } from "./middleware/rateLimit";
 import healthRoutes from "./routes/health";
 import proposalRoutes from "./routes/proposals";
+import leaderboardRoutes from "./routes/leaderboard";
 import apiKeysRoutes from "./routes/apiKeys";
+import adminAuditLogRoutes from "./routes/adminAuditLog";
 import {
   notFoundHandler,
   globalErrorHandler,
@@ -128,7 +130,9 @@ app.use("/api", rateLimit);
 
 // ── Routes ─────────────────────────────────────────────────────────────────
 app.use("/api", proposalRoutes);
+app.use("/api/leaderboard", leaderboardRoutes);
 app.use("/api", apiKeysRoutes);
+app.use("/api", adminAuditLogRoutes);
 
 // Catch unmatched routes — must come after all real route registrations.
 app.use(notFoundHandler);
