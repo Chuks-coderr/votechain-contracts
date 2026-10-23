@@ -34,6 +34,9 @@ use crate::staking::StakeRecord;
 use crate::types::{Allowance, ContractError, TokenDataKey};
 use soroban_sdk::{Address, Env};
 
+const BALANCE_TTL_THRESHOLD: u32 = 2_592_000;
+const BALANCE_TTL_EXTEND_TO: u32 = 3_110_400;
+
 // =============================================================================
 // Storage Strategy
 // =============================================================================
@@ -65,17 +68,27 @@ use soroban_sdk::{Address, Env};
 
 /// Returns the token balance of `owner`. Defaults to `0` if never set.
 pub fn balance_of(env: &Env, owner: &Address) -> i128 {
-    env.storage()
-        .persistent()
-        .get(&TokenDataKey::Balance(owner.clone()))
-        .unwrap_or(0)
+    let key = TokenDataKey::Balance(owner.clone());
+    let balance = env.storage().persistent().get(&key);
+    if balance.is_some() {
+        env.storage().persistent().extend_ttl(
+            &key,
+            BALANCE_TTL_THRESHOLD,
+            BALANCE_TTL_EXTEND_TO,
+        );
+    }
+    balance.unwrap_or(0)
 }
 
 /// Sets the token balance of `owner` to `amount`.
 pub fn set_balance(env: &Env, owner: &Address, amount: i128) {
-    env.storage()
-        .persistent()
-        .set(&TokenDataKey::Balance(owner.clone()), &amount);
+    let key = TokenDataKey::Balance(owner.clone());
+    env.storage().persistent().set(&key, &amount);
+    env.storage().persistent().extend_ttl(
+        &key,
+        BALANCE_TTL_THRESHOLD,
+        BALANCE_TTL_EXTEND_TO,
+    );
 }
 
 /// Returns the spending allowance granted by `owner` to `spender`.
