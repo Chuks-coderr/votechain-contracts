@@ -20,6 +20,7 @@ import { connectRedis, getRedis } from "./middleware/redisCache";
 import { requestTracing } from "./middleware/requestTracing";
 import { apiKeyAuth } from "./middleware/apiKeyAuth";
 import { rateLimit } from "./middleware/rateLimit";
+import { jsonBodyParser } from "./middleware/jsonBodyParser";
 import healthRoutes from "./routes/health";
 import proposalRoutes from "./routes/proposals";
 import leaderboardRoutes from "./routes/leaderboard";
@@ -109,7 +110,7 @@ app.use(cors(corsOptions));
 
 app.use(requestTracing);
 app.use(metricsMiddleware);
-app.use(express.json());
+app.use(jsonBodyParser());
 
 // Health, readiness and metrics — mounted BEFORE rate-limiting and auth so
 // load balancers, orchestrators and Prometheus can always reach them without
