@@ -19,7 +19,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import ProposalList from './ProposalList';
 import type { Proposal } from '../types';
 
@@ -30,6 +30,7 @@ function makeProposal(overrides: Partial<Proposal> = {}): Proposal {
     id: 'P-001',
     title: 'Test Proposal',
     description: 'A test description',
+    tags: [],
     state: 'Active',
     createdAt: '2026-01-01',
     endAt: '2026-02-01',
@@ -41,18 +42,31 @@ function makeProposal(overrides: Partial<Proposal> = {}): Proposal {
 }
 
 const proposals: Proposal[] = [
-  makeProposal({ id: 'P-001', title: 'Alpha Proposal', state: 'Active',   createdAt: '2026-03-01', endAt: '2026-04-01', votesCount: 5,  totalWeight: 500  }),
-  makeProposal({ id: 'P-002', title: 'Beta Proposal',  state: 'Passed',   createdAt: '2026-02-01', endAt: '2026-03-01', votesCount: 20, totalWeight: 2000 }),
-  makeProposal({ id: 'P-003', title: 'Gamma Proposal', state: 'Rejected', createdAt: '2026-01-01', endAt: '2026-02-01', votesCount: 3,  totalWeight: 300  }),
+  makeProposal({ id: 'P-001', title: 'Alpha Proposal', state: 'Active',   createdAt: '2026-03-01', endAt: '2026-04-01', votesCount: 5,  totalWeight: 500, tags: ['treasury', 'governance'] }),
+  makeProposal({ id: 'P-002', title: 'Beta Proposal',  state: 'Passed',   createdAt: '2026-02-01', endAt: '2026-03-01', votesCount: 20, totalWeight: 2000, tags: ['technical'] }),
+  makeProposal({ id: 'P-003', title: 'Gamma Proposal', state: 'Rejected', createdAt: '2026-01-01', endAt: '2026-02-01', votesCount: 3,  totalWeight: 300, tags: ['governance'] }),
 ];
 
 // ── Render helpers ────────────────────────────────────────────
 
-function renderList(props: Proposal[] = proposals) {
+function renderList(props: Proposal[] = proposals, initialEntry = '/') {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <ProposalList proposals={props} />
+      <RouterState />
     </MemoryRouter>,
+  );
+}
+
+function RouterState() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  return (
+    <>
+      <output aria-label="Current search">{location.search}</output>
+      <button type="button" onClick={() => navigate(-1)}>Back</button>
+      <button type="button" onClick={() => navigate(1)}>Forward</button>
+    </>
   );
 }
 
@@ -134,6 +148,24 @@ describe('ProposalList', () => {
     expect(screen.getByText('Alpha Proposal')).toBeInTheDocument();
     expect(screen.getByText('Beta Proposal')).toBeInTheDocument();
     expect(screen.getByText('Gamma Proposal')).toBeInTheDocument();
+  });
+
+  it('loads sanitized tag filters from the URL and persists selections', async () => {
+    const user = userEvent.setup();
+    renderList(proposals, '/?tags=treasury,<script>');
+
+    expect(screen.getByText('Alpha Proposal')).toBeInTheDocument();
+    expect(screen.queryByText('Beta Proposal')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'treasury' })).toHaveAttribute('aria-pressed', 'true');
+
+    await user.click(screen.getByRole('button', { name: 'technical' }));
+    expect(new URLSearchParams(screen.getByLabelText('Current search').textContent ?? '').get('tags'))
+      .toBe('technical,treasury');
+    expect(screen.getByRole('status')).toHaveTextContent(/no matching proposals/i);
+
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    expect(screen.getByRole('button', { name: 'treasury' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'technical' })).toHaveAttribute('aria-pressed', 'false');
   });
 
   it('sorts by newest (default — createdAt desc)', () => {
