@@ -1,84 +1,145 @@
+// Copyright 2024 VoteChain Contributors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 /**
- * Validation middleware for VoteChain backend API.
+ * Request validation middleware using zod.
  *
- * Validates Stellar address format (G... 56-character base32 encoded public keys)
- * before requests reach the RPC layer, returning HTTP 400 on invalid input
- * rather than a confusing 500 from the Stellar RPC layer.
+ * Validates incoming request bodies against named schemas and returns
+ * structured 400 responses on failure:
+ *
+ *   {
+ *     "error": {
+ *       "code": "VALIDATION_ERROR",
+ *       "fields": [
+ *         { "field": "title", "message": "String must contain at most 128 character(s)" }
+ *       ]
+ *     }
+ *   }
+ *
+ * Usage:
+ *   import { validateBody, createProposalSchema, castVoteSchema } from "./validation";
+ *   router.post("/proposals", validateBody(createProposalSchema), handler);
  */
 
+import { z, ZodSchema, ZodError } from "zod";
 import { Request, Response, NextFunction } from "express";
 
-// Stellar public key: starts with 'G', exactly 56 characters, base32 alphabet (A-Z, 2-7)
-const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/;
+// ── Schemas ───────────────────────────────────────────────────────────────────
 
 /**
- * Returns true if the given string is a valid Stellar public key (G-address).
- * Format: starts with 'G', 56 characters total, uppercase base32 (A-Z, 2-7).
+ * Proposal creation body schema.
+ *
+ * Mirrors the on-chain create_proposal parameters:
+ *   - title:       1–128 characters
+ *   - description: 1–1 024 characters
+ *   - quorum:      positive integer (token units)
+ *   - duration:    60–2 592 000 seconds (1 minute to 30 days)
  */
-export function isValidStellarAddress(address: string): boolean {
-  return STELLAR_ADDRESS_RE.test(address);
-}
+export const createProposalSchema = z.object({
+  title: z
+    .string({ required_error: "title is required" })
+    .min(1, "title must be at least 1 character")
+    .max(128, "title must not exceed 128 characters"),
+
+  description: z
+    .string({ required_error: "description is required" })
+    .min(1, "description must be at least 1 character")
+    .max(1_024, "description must not exceed 1024 characters"),
+
+  quorum: z
+    .number({ required_error: "quorum is required", invalid_type_error: "quorum must be a number" })
+    .int("quorum must be an integer")
+    .positive("quorum must be a positive integer"),
+
+  duration: z
+    .number({ required_error: "duration is required", invalid_type_error: "duration must be a number" })
+    .int("duration must be an integer")
+    .min(60, "duration must be at least 60 seconds")
+    .max(2_592_000, "duration must not exceed 2592000 seconds (30 days)"),
+});
 
 /**
- * Express middleware factory that validates a Stellar address in route params.
+ * Cast vote body schema.
  *
- * Usage:
- *   router.get("/voters/:address/votes", validateAddressParam("address"), handler);
- *
- * Returns HTTP 400 with a descriptive error if the address is invalid.
+ *   - proposal_id: positive integer
+ *   - vote:        one of "Yes", "No", "Abstain"
+ *   - voter:       56-character Stellar address starting with "G"
  */
-export function validateAddressParam(paramName: string) {
+export const castVoteSchema = z.object({
+  proposal_id: z
+    .number({ required_error: "proposal_id is required", invalid_type_error: "proposal_id must be a number" })
+    .int("proposal_id must be an integer")
+    .positive("proposal_id must be a positive integer"),
+
+  vote: z.enum(["Yes", "No", "Abstain"], {
+    required_error: "vote is required",
+    invalid_type_error: 'vote must be one of "Yes", "No", or "Abstain"',
+  }),
+
+  voter: z
+    .string({ required_error: "voter is required" })
+    .length(56, "voter must be a 56-character Stellar address")
+    .regex(/^G/, 'voter must start with "G" (Stellar public key format)'),
+});
+
+// ── Exported types ────────────────────────────────────────────────────────────
+
+export type CreateProposalBody = z.infer<typeof createProposalSchema>;
+export type CastVoteBody = z.infer<typeof castVoteSchema>;
+
+// ── Middleware factory ────────────────────────────────────────────────────────
+
+/**
+ * Returns an Express middleware that validates `req.body` against `schema`.
+ *
+ * On success:   calls `next()` with validated (and coerced) data attached to `req.body`.
+ * On failure:   responds with 400 VALIDATION_ERROR and per-field error details.
+ */
+export function validateBody<T>(schema: ZodSchema<T>) {
   return (req: Request, res: Response, next: NextFunction): void => {
-    const address = req.params[paramName];
+    const result = schema.safeParse(req.body);
 
-    if (address === undefined || address === "") {
-      res.status(400).json({
-        code: "INVALID_STELLAR_ADDRESS",
-        message: `Missing required address parameter: ${paramName}`,
-      });
-      return;
+    if (result.success) {
+      // Replace raw body with the validated + coerced value
+      req.body = result.data;
+      return next();
     }
 
-    if (!isValidStellarAddress(address)) {
-      res.status(400).json({
-        code: "INVALID_STELLAR_ADDRESS",
-        message: `Invalid Stellar address for parameter '${paramName}'. ` +
-          `Expected a 56-character base32 public key starting with 'G' (e.g. GABC...XYZ).`,
-      });
-      return;
-    }
-
-    next();
+    const fields = formatZodErrors(result.error);
+    res.status(400).json({
+      error: {
+        code: "VALIDATION_ERROR",
+        fields,
+      },
+    });
   };
 }
 
+// ── Error formatting ──────────────────────────────────────────────────────────
+
+interface FieldError {
+  field: string;
+  message: string;
+}
+
 /**
- * Express middleware factory that validates a Stellar address in query params.
- *
- * Usage:
- *   router.get("/votes", validateAddressQuery("voter"), handler);
- *
- * Returns HTTP 400 with a descriptive error if the address is invalid.
+ * Convert a ZodError into a flat array of field-level error objects.
+ * Nested paths are joined with "." (e.g. "address.street").
  */
-export function validateAddressQuery(queryName: string) {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    const address = req.query[queryName];
-
-    // Query param is optional — only validate if provided
-    if (address === undefined) {
-      next();
-      return;
-    }
-
-    if (typeof address !== "string" || !isValidStellarAddress(address)) {
-      res.status(400).json({
-        code: "INVALID_STELLAR_ADDRESS",
-        message: `Invalid Stellar address for query parameter '${queryName}'. ` +
-          `Expected a 56-character base32 public key starting with 'G' (e.g. GABC...XYZ).`,
-      });
-      return;
-    }
-
-    next();
-  };
+function formatZodErrors(error: ZodError): FieldError[] {
+  return error.errors.map((issue) => ({
+    field: issue.path.join(".") || "_root",
+    message: issue.message,
+  }));
 }

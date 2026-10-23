@@ -1,0 +1,33 @@
+name: Licence Compliance
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  cargo-deny:
+    name: Rust licence check (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+
+  npm-licences:
+    name: Node.js licence check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - name: Fail on disallowed licences
+        run: >
+          npx --yes license-checker@25.0.1 --production --excludePrivatePackages
+          --failOn "GPL-2.0;GPL-3.0;AGPL-3.0;GPL-2.0-only;GPL-3.0-only;AGPL-3.0-only;GPL-2.0-or-later;GPL-3.0-or-later;AGPL-3.0-or-later"

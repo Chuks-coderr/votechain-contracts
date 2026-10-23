@@ -50,6 +50,7 @@ pub fn setup_env() -> TestEnv {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64, // max_active_proposals = 0 → use default of 50
     );
 
     TestEnv {
@@ -77,5 +78,5 @@ pub fn create_test_proposal(t: &TestEnv, proposer: &Address) -> u64 {
 pub fn mint_and_vote(t: &TestEnv, voter: &Address, proposal_id: u64, vote: Vote, amount: i128) {
     let tok = votechain_token::TokenContractClient::new(&t.env, &t.token_id);
     tok.mint(&t.admin, voter, &amount);
-    t.client.cast_vote(voter, &proposal_id, &vote);
+    t.client.cast_vote(voter, &proposal_id, &vote, &None);
 }

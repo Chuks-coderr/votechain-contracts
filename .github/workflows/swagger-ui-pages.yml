@@ -1,0 +1,129 @@
+name: Publish Swagger UI to GitHub Pages
+
+# Runs on every push to main so the published spec stays in sync with the
+# canonical api/openapi.yml.  Can also be triggered manually for a quick
+# re-deploy without a code change.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "api/openapi.yml"
+      - ".github/workflows/swagger-ui-pages.yml"
+  workflow_dispatch:
+
+# Needed to deploy to GitHub Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one deployment can run at a time; cancel any in-progress run when a new
+# push arrives so the latest spec is always what gets published.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Swagger UI static site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Download the latest stable Swagger UI release and extract the dist/
+      # folder, then replace the bundled petstore spec with our own openapi.yml.
+      - name: Download Swagger UI
+        run: |
+          SWAGGER_VERSION=$(curl -s https://api.github.com/repos/swagger-api/swagger-ui/releases/latest \
+            | grep '"tag_name"' | head -1 | cut -d '"' -f4)
+          echo "Using Swagger UI ${SWAGGER_VERSION}"
+          curl -sL "https://github.com/swagger-api/swagger-ui/archive/refs/tags/${SWAGGER_VERSION}.tar.gz" \
+            | tar xz --wildcards "swagger-ui-*/dist" --strip-components=1
+
+      - name: Prepare output directory
+        run: |
+          mkdir -p _site/api
+          # Copy the Swagger UI static assets (HTML, JS, CSS)
+          cp dist/swagger-ui.css          _site/api/
+          cp dist/swagger-ui-bundle.js    _site/api/
+          cp dist/swagger-ui-standalone-preset.js _site/api/ 2>/dev/null || true
+          cp dist/favicon-16x16.png       _site/api/ 2>/dev/null || true
+          cp dist/favicon-32x32.png       _site/api/ 2>/dev/null || true
+          # Copy the OpenAPI spec so it is served from the same origin
+          cp api/openapi.yml              _site/api/openapi.yml
+
+      - name: Generate index.html
+        run: |
+          cat > _site/api/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            <title>VoteChain API — Swagger UI</title>
+            <link rel="stylesheet" href="swagger-ui.css" />
+            <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png" />
+            <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png" />
+            <style>
+              body { margin: 0; }
+              #swagger-ui .topbar { display: none; }
+            </style>
+          </head>
+          <body>
+            <div id="swagger-ui"></div>
+            <script src="swagger-ui-bundle.js"></script>
+            <script>
+              window.onload = function () {
+                SwaggerUIBundle({
+                  url: "./openapi.yml",
+                  dom_id: "#swagger-ui",
+                  presets: [
+                    SwaggerUIBundle.presets.apis,
+                    SwaggerUIBundle.SwaggerUIStandalonePreset
+                  ],
+                  layout: "BaseLayout",
+                  deepLinking: true,
+                  defaultModelsExpandDepth: 1,
+                  defaultModelExpandDepth: 1
+                });
+              };
+            </script>
+          </body>
+          </html>
+          EOF
+
+      - name: Add root redirect
+        run: |
+          # Redirect from the Pages root to the /api/ sub-path for convenience
+          cat > _site/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8" />
+            <meta http-equiv="refresh" content="0; url=api/" />
+            <title>Redirecting to VoteChain API docs…</title>
+          </head>
+          <body>
+            <p>Redirecting to <a href="api/">API docs</a>…</p>
+          </body>
+          </html>
+          EOF
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -8,6 +8,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use serde_json::json;
 use std::sync::{Arc, RwLock};
 use utoipa::OpenApi as _;
 
@@ -15,6 +16,70 @@ use utoipa::OpenApi as _;
 pub struct AppState {
     pub indexer: Arc<RwLock<Indexer>>,
 }
+
+// ---------------------------------------------------------------------------
+// Error mapping helpers
+// ---------------------------------------------------------------------------
+
+/// Canonical error envelope returned by every error path in this API.
+///
+/// Shape: `{ "error": { "code": "...", "message": "...", "details": [] } }`
+fn error_response(
+    status: StatusCode,
+    code: &str,
+    message: &str,
+) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        status,
+        Json(json!({
+            "error": {
+                "code": code,
+                "message": message,
+                "details": []
+            }
+        })),
+    )
+}
+
+/// Map a well-known `ApiError` code string to the appropriate HTTP status and
+/// return the full error envelope.
+pub fn map_api_error(e: ApiError) -> (StatusCode, Json<serde_json::Value>) {
+    let status = match e.code.as_str() {
+        // 404 — resource not found
+        "ProposalNotFound" | "NotFound" => StatusCode::NOT_FOUND,
+        // 400 — caller supplied invalid input
+        "InvalidQuorum"
+        | "InvalidDuration"
+        | "InvalidTitle"
+        | "InvalidDescription"
+        | "InvalidAmount"
+        | "InvalidDurationRange"
+        | "BadRequest" => StatusCode::BAD_REQUEST,
+        // 403 — access / authorisation denied
+        "NotAdmin" | "AdminVoteRestricted" | "Forbidden" => StatusCode::FORBIDDEN,
+        // 401 — not authenticated
+        "Unauthorized" | "Unauthenticated" => StatusCode::UNAUTHORIZED,
+        // 429 — rate limiting
+        "ProposalCooldown" | "RateLimited" => StatusCode::TOO_MANY_REQUESTS,
+        // everything else is an internal error
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+
+    error_response(status, &e.code, &e.message)
+}
+
+/// Convenience constructor for a 404 "not found" envelope.
+fn not_found(resource: &str, id: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Value>) {
+    error_response(
+        StatusCode::NOT_FOUND,
+        "NOT_FOUND",
+        &format!("{} {} not found", resource, id),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Route handlers
+// ---------------------------------------------------------------------------
 
 /// List all proposals with optional state filter and pagination.
 #[utoipa::path(
@@ -51,17 +116,11 @@ pub async fn list_proposals(
 pub async fn get_proposal(
     State(state): State<AppState>,
     Path(id): Path<u64>,
-) -> Result<Json<ProposalDetail>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<ProposalDetail>, (StatusCode, Json<serde_json::Value>)> {
     let indexer = state.indexer.read().unwrap();
     match indexer.get_proposal(id) {
         Some(proposal) => Ok(Json(proposal)),
-        None => Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                code: "ProposalNotFound".to_string(),
-                message: format!("Proposal {} not found", id),
-            }),
-        )),
+        None => Err(not_found("Proposal", id)),
     }
 }
 
@@ -80,16 +139,10 @@ pub async fn get_proposal(
 pub async fn get_proposal_votes(
     State(state): State<AppState>,
     Path(id): Path<u64>,
-) -> Result<Json<Vec<VoteRecord>>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<Vec<VoteRecord>>, (StatusCode, Json<serde_json::Value>)> {
     let indexer = state.indexer.read().unwrap();
     if indexer.get_proposal(id).is_none() {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                code: "ProposalNotFound".to_string(),
-                message: format!("Proposal {} not found", id),
-            }),
-        ));
+        return Err(not_found("Proposal", id));
     }
     Ok(Json(indexer.get_proposal_votes(id)))
 }

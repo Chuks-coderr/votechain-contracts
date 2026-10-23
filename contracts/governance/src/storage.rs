@@ -37,8 +37,37 @@
 //! Because the discriminant is part of the serialised key, these can never
 //! collide even when called with identical arguments.
 
-use crate::types::{ContractError, ContractState, DataKey, Proposal, VoteRecord};
-use soroban_sdk::{Address, Env};
+use crate::types::{ContractError, ContractState, DataKey, PendingMultisigAction, Proposal, ProposalTemplate, VoteRecord};
+use soroban_sdk::{Address, Env, Vec};
+
+// =============================================================================
+// TTL Constants (Issue #43)
+// =============================================================================
+//
+// Soroban persistent storage entries expire after ~30 days (~2,592,000 ledgers
+// at ~1 ledger/second) if not bumped.  Long-lived proposals (up to 30-day voting
+// windows) risk having their storage entries expire mid-vote.
+//
+// These constants match Stellar's ledger TTL settings:
+//
+//   LEDGER_PER_SECOND ≈ 1  →  1 ledger ≈ 1 second
+//   PERSISTENT_ENTRY_EXPIRATION_BUMP ≈ the current Stellar network setting of
+//   ~3,110,400 ledgers (≈ 36 days).
+//
+// We store durations in ledgers (≈ seconds):
+//   MIN_TTL  — minimum number of ledgers the entry must still have remaining
+//              before we skip the bump.  Set to 30 days so bumps only fire
+//              when less than 30 days remain.
+//   MAX_TTL  — target TTL to extend to.  Set to 36 days to match the Stellar
+//              network persistent-entry bump amount.
+//
+// References:
+//   https://developers.stellar.org/docs/learn/soroban/storage/state-expiration
+//   CAP-0046: State Expiration
+/// Minimum ledger TTL before a bump is applied (30 days in ledgers ≈ seconds).
+pub const TTL_MIN_LEDGERS: u32 = 2_592_000;
+/// Target TTL after a bump (36 days in ledgers ≈ seconds).
+pub const TTL_MAX_LEDGERS: u32 = 3_110_400;
 
 // =============================================================================
 // Storage Strategy
@@ -77,19 +106,35 @@ use soroban_sdk::{Address, Env};
 // =============================================================================
 
 /// Persists a proposal to contract storage, keyed by its ID.
+///
+/// Also bumps the persistent-storage TTL so the entry survives long voting periods
+/// (up to 30 days) without expiring.  See `TTL_MIN_LEDGERS` / `TTL_MAX_LEDGERS`.
 pub fn save_proposal(env: &Env, p: &Proposal) {
-    env.storage().persistent().set(&DataKey::Proposal(p.id), p);
+    let key = DataKey::Proposal(p.id);
+    env.storage().persistent().set(&key, p);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_MIN_LEDGERS, TTL_MAX_LEDGERS);
 }
 
 /// Loads a proposal from storage by ID.
 ///
+/// Bumps the persistent-storage TTL on every successful read so the entry is not
+/// silently evicted while a proposal is still being voted on.
+///
 /// # Errors
 /// - [`ContractError::ProposalNotFound`] if no proposal exists for `id`.
 pub fn load_proposal(env: &Env, id: u64) -> Result<Proposal, ContractError> {
+    let key = DataKey::Proposal(id);
+    let proposal = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .ok_or(ContractError::ProposalNotFound)?;
     env.storage()
         .persistent()
-        .get(&DataKey::Proposal(id))
-        .ok_or(ContractError::ProposalNotFound)
+        .extend_ttl(&key, TTL_MIN_LEDGERS, TTL_MAX_LEDGERS);
+    Ok(proposal)
 }
 
 /// Increments the proposal counter and returns the new ID.
@@ -179,6 +224,21 @@ pub fn has_voted(env: &Env, proposal_id: u64, voter: &Address) -> bool {
     env.storage()
         .persistent()
         .get(&DataKey::HasVoted(proposal_id, voter.clone()))
+        .unwrap_or(false)
+}
+
+/// Records that `proposal_id`'s voting period has been extended once via `extend_voting`.
+pub fn mark_extended(env: &Env, proposal_id: u64) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::ProposalExtended(proposal_id), &true);
+}
+
+/// Returns `true` if `proposal_id`'s voting period has already been extended once.
+pub fn has_extended(env: &Env, proposal_id: u64) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ProposalExtended(proposal_id))
         .unwrap_or(false)
 }
 
@@ -355,4 +415,150 @@ pub fn get_admin_transfer_expiry(env: &Env) -> u64 {
         .instance()
         .get(&DataKey::AdminTransferExpiry)
         .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// Delegation storage
+// ---------------------------------------------------------------------------
+
+/// Records that `delegator` has delegated their voting power to `delegate`.
+///
+/// Stored in persistent storage so that delegations survive ledger expiry
+/// without needing to be re-submitted on every proposal.
+pub fn set_delegation(env: &Env, delegator: &Address, delegate: &Address) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::Delegation(delegator.clone()), delegate);
+}
+
+/// Returns the address to which `delegator` has delegated, or `None` if the
+/// delegator has not delegated their voting power.
+pub fn get_delegation(env: &Env, delegator: &Address) -> Option<Address> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Delegation(delegator.clone()))
+}
+
+/// Removes the delegation record for `delegator`.
+///
+/// After this call `get_delegation(delegator)` returns `None` and the
+/// delegator may vote directly again.
+pub fn clear_delegation(env: &Env, delegator: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::Delegation(delegator.clone()));
+}
+
+/// Stores the previous WASM hash for rollback purposes.
+pub fn set_previous_wasm_hash(env: &Env, hash: &soroban_sdk::BytesN<32>) {
+    env.storage()
+        .instance()
+        .set(&DataKey::PreviousWasmHash, hash);
+}
+
+/// Returns the previous WASM hash, if any.
+pub fn get_previous_wasm_hash(env: &Env) -> Option<soroban_sdk::BytesN<32>> {
+    env.storage().instance().get(&DataKey::PreviousWasmHash)
+}
+
+// ---------------------------------------------------------------------------
+// Active proposal cap and counter (#34 — TooManyActiveProposals)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_MAX_ACTIVE_PROPOSALS: u64 = 50;
+
+/// Stores the global cap on simultaneously active proposals.
+pub fn set_max_active_proposals(env: &Env, cap: u64) {
+    env.storage()
+        .instance()
+        .set(&DataKey::MaxActiveProposals, &cap);
+}
+
+/// Returns the global cap on simultaneously active proposals.
+/// Defaults to 50 if not explicitly configured.
+pub fn get_max_active_proposals(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::MaxActiveProposals)
+        .unwrap_or(DEFAULT_MAX_ACTIVE_PROPOSALS)
+}
+
+/// Returns the current count of active proposals.
+pub fn count_active_proposals(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::ActiveProposalsCount)
+        .unwrap_or(0)
+}
+
+/// Increments the active-proposal counter by one.
+pub fn increment_active_proposals(env: &Env) {
+    let current = count_active_proposals(env);
+    env.storage()
+        .instance()
+        .set(&DataKey::ActiveProposalsCount, &(current + 1));
+}
+
+/// Decrements the active-proposal counter by one (saturating at zero).
+pub fn decrement_active_proposals(env: &Env) {
+    let current = count_active_proposals(env);
+    env.storage()
+        .instance()
+        .set(&DataKey::ActiveProposalsCount, &current.saturating_sub(1));
+}
+
+// ---------------------------------------------------------------------------
+// Proposal template storage (issue #324)
+// ---------------------------------------------------------------------------
+
+/// Maximum byte length of a template ID string.
+pub const MAX_TEMPLATE_ID_LEN: u32 = 64;
+
+/// Stores a proposal template in persistent storage, keyed by its template ID.
+///
+/// Also bumps the persistent-storage TTL so the entry survives long-term
+/// without expiring.
+pub fn save_template(env: &Env, template: &ProposalTemplate) {
+    let key = DataKey::ProposalTemplate(template.template_id.clone());
+    env.storage().persistent().set(&key, template);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_MIN_LEDGERS, TTL_MAX_LEDGERS);
+}
+
+/// Loads a proposal template from storage by its string ID.
+///
+/// Bumps the persistent-storage TTL on every successful read.
+///
+/// # Errors
+/// - [`ContractError::TemplateNotFound`] if no template exists for `template_id`.
+pub fn load_template(env: &Env, template_id: &String) -> Result<ProposalTemplate, ContractError> {
+    let key = DataKey::ProposalTemplate(template_id.clone());
+    let template = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .ok_or(ContractError::TemplateNotFound)?;
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_MIN_LEDGERS, TTL_MAX_LEDGERS);
+    Ok(template)
+}
+
+/// Returns `true` if a template with the given ID already exists.
+pub fn has_template(env: &Env, template_id: &String) -> bool {
+    env.storage()
+        .persistent()
+        .has(&DataKey::ProposalTemplate(template_id.clone()))
+}
+
+/// Removes a proposal template from storage. Returns `true` if a template
+/// was deleted, `false` if no template existed for the given ID.
+pub fn remove_template(env: &Env, template_id: &String) -> bool {
+    let key = DataKey::ProposalTemplate(template_id.clone());
+    let existed = env.storage().persistent().has(&key);
+    if existed {
+        env.storage().persistent().remove(&key);
+    }
+    existed
 }

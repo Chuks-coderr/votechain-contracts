@@ -1,0 +1,119 @@
+# Copyright 2024 VoteChain Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Alerting rules for the VoteChain backend. (#66)
+# Loaded by Prometheus via rule_files in prometheus.yml.
+
+groups:
+  - name: votechain-backend
+    rules:
+      - alert: HighApiLatencyP99
+        expr: >
+          histogram_quantile(
+            0.99,
+            sum(rate(votechain_http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API p99 latency above 2s"
+          description: >
+            The 99th percentile request latency has exceeded 2 seconds for
+            5 minutes. Current value: {{ $value }}s.
+
+      - alert: LowCacheHitRate
+        expr: votechain_cache_hit_rate < 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis cache hit rate below 50%"
+          description: >
+            The proposal cache hit rate has been below 50% for 10 minutes.
+            Current value: {{ $value | humanizePercentage }}.
+
+  # ── SLO alerting rules (#272) ──────────────────────────────────────────────
+  # SLO: 99.9% availability (error budget = 0.1% = 0.001)
+  # Burn rate = actual error rate / error budget allowance
+  # Multi-window multi-burn-rate alerts:
+  #   2x burn rate (warning)  — 1h and 5m windows both exceed 2x
+  #   5x burn rate (critical) — 6h and 30m windows both exceed 5x
+  - name: votechain-slo
+    rules:
+      - alert: SLOErrorBudgetBurnRate2x
+        expr: >
+          (
+            sum(rate(votechain_http_requests_total{status=~"5.."}[1h]))
+            /
+            clamp_min(sum(rate(votechain_http_requests_total[1h])), 1)
+          ) > (2 * 0.001)
+          and
+          (
+            sum(rate(votechain_http_requests_total{status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(votechain_http_requests_total[5m])), 1)
+          ) > (2 * 0.001)
+        for: 2m
+        labels:
+          severity: warning
+          slo: availability
+        annotations:
+          summary: "SLO error budget burn rate above 2x"
+          description: >
+            The API error rate is consuming the error budget at more than
+            2x the sustainable rate (measured over both 1h and 5m windows).
+            If this continues, the 99.9% availability SLO will be breached
+            within the 30-day window. Current 1h burn rate: {{ $value }}.
+
+      - alert: SLOErrorBudgetBurnRate5x
+        expr: >
+          (
+            sum(rate(votechain_http_requests_total{status=~"5.."}[6h]))
+            /
+            clamp_min(sum(rate(votechain_http_requests_total[6h])), 1)
+          ) > (5 * 0.001)
+          and
+          (
+            sum(rate(votechain_http_requests_total{status=~"5.."}[30m]))
+            /
+            clamp_min(sum(rate(votechain_http_requests_total[30m])), 1)
+          ) > (5 * 0.001)
+        for: 5m
+        labels:
+          severity: critical
+          slo: availability
+        annotations:
+          summary: "SLO error budget burn rate above 5x (CRITICAL)"
+          description: >
+            The API error rate is consuming the error budget at more than
+            5x the sustainable rate (measured over both 6h and 30m windows).
+            Immediate intervention is required — the 99.9% availability SLO
+            will be breached if this continues. Current 6h burn rate: {{ $value }}.
+
+      - alert: SLOLatencyP95Exceeded
+        expr: >
+          histogram_quantile(
+            0.95,
+            sum(rate(votechain_http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          slo: latency
+        annotations:
+          summary: "P95 latency exceeds 500ms SLO"
+          description: >
+            The 95th percentile request latency has exceeded the 500ms SLO
+            target for 10 minutes. Current value: {{ $value }}s.

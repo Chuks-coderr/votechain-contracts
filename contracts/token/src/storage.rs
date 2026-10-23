@@ -30,7 +30,8 @@
 //! - **Temporary** – short-lived allowances (`Allowance`).
 //!   Automatically expires; no manual TTL management required.
 
-use crate::types::{ContractError, TokenDataKey};
+use crate::staking::StakeRecord;
+use crate::types::{Allowance, ContractError, TokenDataKey};
 use soroban_sdk::{Address, Env};
 
 // =============================================================================
@@ -77,19 +78,34 @@ pub fn set_balance(env: &Env, owner: &Address, amount: i128) {
         .set(&TokenDataKey::Balance(owner.clone()), &amount);
 }
 
-/// Returns the spending allowance granted by `owner` to `spender`. Defaults to `0`.
+/// Returns the spending allowance granted by `owner` to `spender`.
+///
+/// Returns `0` if no allowance exists or if the allowance has expired
+/// (i.e. `current_ledger_sequence > expiry_ledger`).
 pub fn allowance(env: &Env, owner: &Address, spender: &Address) -> i128 {
+    let key = TokenDataKey::Allowance(owner.clone(), spender.clone());
+    match env.storage().temporary().get::<_, Allowance>(&key) {
+        Some(a) if env.ledger().sequence() <= a.expiry_ledger => a.amount,
+        _ => 0,
+    }
+}
+
+/// Returns the full [`Allowance`] record granted by `owner` to `spender`, or
+/// `None` if no allowance has been set.
+///
+/// Unlike [`allowance`] this returns the raw record even if it has expired,
+/// so callers that need to inspect the expiry can do so.
+pub fn get_allowance(env: &Env, owner: &Address, spender: &Address) -> Option<Allowance> {
     env.storage()
         .temporary()
         .get(&TokenDataKey::Allowance(owner.clone(), spender.clone()))
-        .unwrap_or(0)
 }
 
 /// Sets the spending allowance granted by `owner` to `spender`.
-pub fn set_allowance(env: &Env, owner: &Address, spender: &Address, amount: i128) {
+pub fn set_allowance(env: &Env, owner: &Address, spender: &Address, record: &Allowance) {
     env.storage().temporary().set(
         &TokenDataKey::Allowance(owner.clone(), spender.clone()),
-        &amount,
+        record,
     );
 }
 
@@ -135,4 +151,25 @@ pub fn get_version(env: &Env) -> (u32, u32, u32) {
         .instance()
         .get(&TokenDataKey::Version)
         .unwrap_or((0, 0, 0))
+}
+
+/// SEC-013: Returns the active [`StakeRecord`] for `staker`, if any.
+pub fn get_stake_record(env: &Env, staker: &Address) -> Option<StakeRecord> {
+    env.storage()
+        .persistent()
+        .get(&TokenDataKey::StakeRecord(staker.clone()))
+}
+
+/// SEC-013: Writes (or overwrites) the [`StakeRecord`] for `staker`.
+pub fn set_stake_record(env: &Env, staker: &Address, record: &StakeRecord) {
+    env.storage()
+        .persistent()
+        .set(&TokenDataKey::StakeRecord(staker.clone()), record);
+}
+
+/// SEC-013: Deletes the [`StakeRecord`] for `staker` (called on full unstake).
+pub fn remove_stake_record(env: &Env, staker: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&TokenDataKey::StakeRecord(staker.clone()));
 }

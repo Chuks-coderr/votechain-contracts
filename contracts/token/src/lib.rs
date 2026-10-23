@@ -15,6 +15,7 @@
 #![no_std]
 
 mod events;
+mod staking;
 mod storage;
 mod types;
 
@@ -23,7 +24,7 @@ mod test;
 
 use soroban_sdk::{contract, contractimpl, Address, Env};
 use storage::*;
-use types::ContractError;
+use types::{Allowance, ContractError};
 
 // SEC-004: Stellar null/zero address used as the sentinel for invalid inputs.
 const ZERO_ADDRESS: &str = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
@@ -133,36 +134,61 @@ impl TokenContract {
         if b < amount {
             return Err(ContractError::InsufficientBalance);
         }
+        // SEC-013 §2.3: tokens committed to an active stake lock cannot be
+        // transferred until the lock expires.
+        if staking::transferable_balance(&env, &from, b) < amount {
+            return Err(ContractError::TokensLocked);
+        }
         set_balance(&env, &from, b - amount);
         set_balance(&env, &to, balance_of(&env, &to) + amount);
         events::transferred(&env, &from, &to, amount);
         Ok(())
     }
 
-    /// Approves `spender` to transfer up to `amount` tokens on behalf of `owner`.
+    /// Approves `spender` to transfer up to `amount` tokens on behalf of `owner`,
+    /// with an explicit ledger-sequence expiry.
     ///
-    /// Overwrites any existing allowance. Stored in temporary storage (expires with the ledger).
+    /// Overwrites any existing allowance. Stored in temporary storage (expires with
+    /// the ledger-entry TTL **or** when `expiry_ledger` is reached, whichever comes
+    /// first).
     ///
     /// # Parameters
     /// - `env` – Soroban execution environment.
     /// - `owner` – Token owner granting the allowance; must authorise the call.
     /// - `spender` – Address permitted to spend on behalf of `owner`.
-    /// - `amount` – Maximum tokens the spender may transfer.
+    /// - `amount` – Maximum tokens the spender may transfer. Use `0` to revoke.
+    /// - `expiry_ledger` – The ledger sequence number at which the allowance expires
+    ///   (inclusive). Must be `>= env.ledger().sequence()`. After this ledger the
+    ///   allowance is treated as zero by `allowance()` and `transfer_from()`.
     ///
     /// # Errors
     /// - [`ContractError::InvalidAddress`] if `owner` or `spender` is the zero address.
+    /// - [`ContractError::InvalidExpiry`] if `expiry_ledger < env.ledger().sequence()`.
     pub fn approve(
         env: Env,
         owner: Address,
         spender: Address,
         amount: i128,
+        expiry_ledger: u32,
     ) -> Result<(), ContractError> {
         // SEC-005: auth first.
         owner.require_auth();
         // SEC-004: reject zero addresses.
         require_non_zero_address(&env, &owner)?;
         require_non_zero_address(&env, &spender)?;
-        set_allowance(&env, &owner, &spender, amount);
+        // Expiry must not be in the past.
+        if expiry_ledger < env.ledger().sequence() {
+            return Err(ContractError::InvalidExpiry);
+        }
+        set_allowance(
+            &env,
+            &owner,
+            &spender,
+            &Allowance {
+                amount,
+                expiry_ledger,
+            },
+        );
         Ok(())
     }
 
@@ -177,6 +203,7 @@ impl TokenContract {
     ///
     /// # Errors
     /// - [`ContractError::InvalidAddress`] if `spender`, `from`, or `to` is the zero address.
+    /// - [`ContractError::AllowanceExpired`] if the allowance has expired.
     /// - [`ContractError::AllowanceExceeded`] if `amount` exceeds the current allowance.
     /// - [`ContractError::InsufficientBalance`] if `from` has fewer tokens than `amount`.
     pub fn transfer_from(
@@ -192,7 +219,17 @@ impl TokenContract {
         require_non_zero_address(&env, &spender)?;
         require_non_zero_address(&env, &from)?;
         require_non_zero_address(&env, &to)?;
-        let allowed = allowance(&env, &from, &spender);
+
+        // Check allowance — returns 0 for expired or missing allowances.
+        // We also need the raw record to distinguish "expired" from "never set".
+        let record = get_allowance(&env, &from, &spender);
+        match &record {
+            Some(a) if env.ledger().sequence() > a.expiry_ledger => {
+                return Err(ContractError::AllowanceExpired);
+            }
+            _ => {}
+        }
+        let allowed = record.map(|a| a.amount).unwrap_or(0);
         if allowed < amount {
             return Err(ContractError::AllowanceExceeded);
         }
@@ -200,7 +237,24 @@ impl TokenContract {
         if b < amount {
             return Err(ContractError::InsufficientBalance);
         }
-        set_allowance(&env, &from, &spender, allowed - amount);
+        // SEC-013 §2.1/§2.3: block the allowance-trick lock bypass — a
+        // spender cannot move `from`'s tokens past the transferable
+        // (unstaked) balance, even with a valid, unexpired allowance.
+        if staking::transferable_balance(&env, &from, b) < amount {
+            return Err(ContractError::TokensLocked);
+        }
+        // Update allowance: keep same expiry, reduce amount.
+        if let Some(a) = get_allowance(&env, &from, &spender) {
+            set_allowance(
+                &env,
+                &from,
+                &spender,
+                &Allowance {
+                    amount: allowed - amount,
+                    expiry_ledger: a.expiry_ledger,
+                },
+            );
+        }
         set_balance(&env, &from, b - amount);
         set_balance(&env, &to, balance_of(&env, &to) + amount);
         events::transferred(&env, &from, &to, amount);
@@ -310,5 +364,48 @@ impl TokenContract {
     /// Returns the contract version as a `(major, minor, patch)` semver tuple.
     pub fn get_version(env: Env) -> (u32, u32, u32) {
         get_version(&env)
+    }
+
+    /// Returns the remaining spending allowance granted by `owner` to `spender`.
+    ///
+    /// Returns `0` if no allowance has been set, if the allowance has been fully
+    /// spent, or if the allowance has expired (`current_ledger > expiry_ledger`).
+    pub fn allowance(env: Env, owner: Address, spender: Address) -> i128 {
+        storage::allowance(&env, &owner, &spender)
+    }
+
+    /// SEC-013 / ADR-013: Locks `amount` tokens for `lock_duration_seconds`,
+    /// granting a time-weighted voting-power multiplier once staked.
+    ///
+    /// # Errors
+    /// - [`ContractError::InvalidAmount`] if `amount` is zero or negative.
+    /// - [`ContractError::InvalidLockDuration`] if the duration exceeds
+    ///   `staking::MAX_LOCK_DAYS`.
+    /// - [`ContractError::AlreadyStaked`] if `staker` already has a position.
+    /// - [`ContractError::InsufficientBalance`] if the transferable balance is
+    ///   less than `amount`.
+    pub fn stake(
+        env: Env,
+        staker: Address,
+        amount: i128,
+        lock_duration_seconds: u64,
+    ) -> Result<(), ContractError> {
+        staking::stake(&env, staker, amount, lock_duration_seconds)
+    }
+
+    /// SEC-013 / ADR-013: Releases an expired stake position, restoring the
+    /// locked tokens to the transferable balance.
+    ///
+    /// # Errors
+    /// - [`ContractError::StakeNotFound`] if `staker` has no active position.
+    /// - [`ContractError::StakeLocked`] if `locked_until` has not yet passed.
+    pub fn unstake(env: Env, staker: Address) -> Result<(), ContractError> {
+        staking::unstake(&env, staker)
+    }
+
+    /// SEC-013 / ADR-013: Returns the time-weighted voting power for `staker`,
+    /// accounting for any active stake lock multiplier.
+    pub fn staked_voting_power(env: Env, staker: Address) -> i128 {
+        staking::staked_voting_power(&env, staker)
     }
 }

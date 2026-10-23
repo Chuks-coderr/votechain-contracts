@@ -1,24 +1,152 @@
 version: 2
 updates:
+  # ── Cargo: workspace root (contracts, fuzz, shared crates) ───────────────────
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
       interval: "weekly"
-    # Allow PRs to be opened automatically for patches and minor updates
     open-pull-requests-limit: 10
-    # Optionally, you can add reviewers or labels here
-    # reviewers: ["team"]
-version: 2
-updates:
+    labels:
+      - "dependencies"
+      - "security"
+    assignees:
+      - "veracindarella"
+    groups:
+      cargo-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    allow:
+      - dependency-type: "all"
+
+  # ── Cargo: indexer ────────────────────────────────────────────────────────────
   - package-ecosystem: "cargo"
+    directory: "/indexer"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    groups:
+      cargo-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── Cargo: REST API ───────────────────────────────────────────────────────────
+  - package-ecosystem: "cargo"
+    directory: "/api"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    groups:
+      cargo-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── npm: frontend ─────────────────────────────────────────────────────────────
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "npm"
+    groups:
+      npm-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── npm: backend ──────────────────────────────────────────────────────────────
+  - package-ecosystem: "npm"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "npm"
+    groups:
+      npm-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── npm: sdk ──────────────────────────────────────────────────────────────────
+  - package-ecosystem: "npm"
+    directory: "/sdk"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "npm"
+    groups:
+      npm-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── npm: bots/governance-alerts ───────────────────────────────────────────────
+  - package-ecosystem: "npm"
+    directory: "/bots/governance-alerts"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "npm"
+    groups:
+      npm-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── GitHub Actions ────────────────────────────────────────────────────────────
+  # Auto-update pinned GitHub Actions SHAs. Dependabot opens grouped PRs to
+  # reduce noise when multiple actions release on the same day.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
+    groups:
+      # Batch all first-party GitHub Actions (actions/*) into one PR.
+      github-actions-official:
+        patterns:
+          - "actions/*"
+      # Batch all third-party actions into a separate PR.
+      github-actions-third-party:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "actions/*"
+
+  # Keep pinned image tags and SHA digests current in Dockerfiles.
+  - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
-    assignees:
-      - "@veracindarella"
     labels:
       - "dependencies"
-      - "security"
-    allow:
-      - dependency-type: "all"
+      - "docker"
+
+  # Docker Compose has its own Dependabot ecosystem.
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "docker"

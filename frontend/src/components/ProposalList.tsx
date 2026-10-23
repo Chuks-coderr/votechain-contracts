@@ -1,5 +1,22 @@
+// Copyright 2024 VoteChain Contributors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import type { Proposal, ProposalState } from '../types';
+import QuorumProgressBar from './QuorumProgressBar';
+import { sanitizeText } from '../utils/sanitize';
 
 const sortOptions = [
   { value: 'newest', label: 'Newest' },
@@ -28,6 +45,7 @@ export default function ProposalList({ proposals }: Props) {
   const [searchText, setSearchText] = useState('');
   const [stateFilter, setStateFilter] = useState<StateFilter>('All');
   const [sortKey, setSortKey] = useState<SortKey>('newest');
+  const hasActiveFilters = searchText.trim() !== '' || stateFilter !== 'All';
 
   const filtered = useMemo(() => {
     const normalizedSearch = searchText.trim().toLowerCase();
@@ -97,42 +115,72 @@ export default function ProposalList({ proposals }: Props) {
           </select>
         </label>
       </div>
-      <div className="table-wrapper" aria-live="polite">
-        <table>
-          <caption className="visually-hidden">Filtered and sorted proposal listing</caption>
-          <thead>
-            <tr>
-              <th scope="col">ID</th>
-              <th scope="col">Title</th>
-              <th scope="col">State</th>
-              <th scope="col">Created</th>
-              <th scope="col">End date</th>
-              <th scope="col">Votes</th>
-              <th scope="col">Weight</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((proposal) => (
-              <tr key={proposal.id}>
-                <td>{proposal.id}</td>
-                <td>{proposal.title}</td>
-                <td>
-                  <span className={statusClass(proposal.state)}>{labelForState(proposal.state)}</span>
-                </td>
-                <td>{proposal.createdAt}</td>
-                <td>{proposal.endAt}</td>
-                <td>{proposal.votesCount}</td>
-                <td>{proposal.totalWeight}</td>
-              </tr>
-            ))}
-            {filtered.length === 0 && (
+      {filtered.length === 0 ? (
+        <div className="proposal-empty-state" role="status" aria-live="polite">
+          <svg className="proposal-empty-state__illustration" viewBox="0 0 80 80" aria-hidden="true">
+            <rect x="14" y="12" width="52" height="56" rx="3" fill="none" stroke="currentColor" strokeWidth="2" />
+            <path d="M25 27h30M25 38h18M25 52l7 7 15-16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <h3>{hasActiveFilters ? 'No matching proposals' : 'No proposals yet'}</h3>
+          <p>
+            {hasActiveFilters
+              ? 'Try changing your search or filters.'
+              : 'There are no governance proposals to display.'}
+          </p>
+          {hasActiveFilters && (
+            <button
+              type="button"
+              onClick={() => {
+                setSearchText('');
+                setStateFilter('All');
+              }}
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="table-wrapper" aria-live="polite">
+          <table>
+            <caption className="visually-hidden">Filtered and sorted proposal listing</caption>
+            <thead>
               <tr>
-                <td colSpan={7}>No proposals match your search and filter criteria.</td>
+                <th scope="col">ID</th>
+                <th scope="col">Title</th>
+                <th scope="col">State</th>
+                <th scope="col">Created</th>
+                <th scope="col">End date</th>
+                <th scope="col">Votes</th>
+                <th scope="col">Weight</th>
+                <th scope="col">Quorum</th>
               </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {filtered.map((proposal) => (
+                <tr key={proposal.id}>
+                  <td>{proposal.id}</td>
+                  <td>
+                    <Link to={`/proposals/${proposal.id}`}>{sanitizeText(proposal.title)}</Link>
+                  </td>
+                  <td>
+                    <span className={statusClass(proposal.state)}>{labelForState(proposal.state)}</span>
+                  </td>
+                  <td>{proposal.createdAt}</td>
+                  <td>{proposal.endAt}</td>
+                  <td>{proposal.votesCount}</td>
+                  <td>{proposal.totalWeight}</td>
+                  <td style={{ minWidth: '140px' }}>
+                    <QuorumProgressBar
+                      totalVotes={proposal.totalWeight}
+                      quorum={proposal.quorum}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </section>
   );
 }
