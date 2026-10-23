@@ -7,22 +7,34 @@ This document lists known limitations and accepted risks in VoteChain v0.1.1, pr
 ## KI-001 — Vote Weight Recycling (No Snapshot Mechanism)
 
 **Severity:** Medium  
-**Component:** `contracts/governance/src/lib.rs` → `cast_vote`  
-**Status:** Accepted — tracked as SC-020 for a future release  
+**Component:** `contracts/governance/src/lib.rs` → `cast_vote`, `cast_vote_with_delegators`  
+**Status:** Accepted — Planning SC-020 snapshot mechanism for v0.2.0  
 
 **Description:**  
-Vote weight is read from the voter's live token balance at the time `cast_vote` is called. After voting, a voter can transfer their tokens to a second address, which can then vote on the same proposal with the same tokens. This allows a single economic position to cast votes with weight exceeding its actual stake.
+Vote weight is read from the voter's live token balance at the time `cast_vote` is called. After voting, a voter can transfer their tokens to a second address, which can then vote on the same proposal with the same tokens. This allows a single economic position to cast votes with weight exceeding its actual stake across multiple addresses (token recycling).
 
 **Impact:**  
-A coordinated group controlling a token supply can amplify their effective vote weight by recycling tokens across multiple addresses within the same voting window.
+A coordinated group or well-funded attacker can amplify their effective vote weight by recycling tokens across multiple addresses within the same voting window. However, all transfers are visible on-chain, and the attack is rate-limited by the `has_voted` guard (one vote per unique voter address per proposal).
 
-**Mitigation considered:**  
-Implement a balance snapshot at proposal creation time (SC-020). The snapshot would record each address's balance at the ledger when the proposal was created and use that value as the vote weight, preventing post-vote token movement from affecting the tally.
+**Mitigation (Current v0.1.x):**  
+1. **Soroban's atomic execution model** prevents same-transaction flash-loan attacks. Within a single transaction, balance updates and vote records are synchronized, preventing an attacker from acquiring tokens, voting, and repaying within the same invocation.
+2. **The `has_voted` guard** prevents a single address from voting twice on the same proposal, requiring attackers to use multiple addresses (making the attack detectable).
+3. **On-chain transparency:** All token transfers are visible, enabling off-chain analysis to identify suspicious voting patterns.
+
+These mitigations reduce the risk to acceptable levels for v0.1.x but do not eliminate it.
+
+**Mitigation (Planned SC-020):**  
+Implement a balance snapshot at proposal creation time. The snapshot records each address's balance at the ledger when the proposal was created and uses that value as the vote weight, preventing post-creation token movement from affecting the tally entirely.
 
 **Why not fixed yet:**  
-Soroban does not natively support balance checkpointing. Implementing SC-020 requires either a custom snapshot function in the token contract or an off-chain indexer, both of which are non-trivial. This is planned for v0.2.0.
+Soroban does not natively support balance checkpointing. Implementing SC-020 requires either a custom snapshot function in the token contract or an off-chain indexer, both of which are non-trivial. This is planned for v0.2.0 as a best-practices enhancement.
 
-**References:** `docs/security/SEC-008-token-balance-fetch-audit.md` §5
+**Investigation & Analysis:**  
+See `docs/security/SEC-011-flash-loan-investigation.md` for a detailed analysis of the flash-loan attack vector, Soroban execution model mitigations, and risk assessment.
+
+**References:** 
+- `docs/security/SEC-008-token-balance-fetch-audit.md` — Token balance fetch audit
+- `docs/security/SEC-011-flash-loan-investigation.md` — Flash-loan attack investigation (NEW)
 
 ---
 

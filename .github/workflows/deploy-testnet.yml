@@ -1,5 +1,9 @@
 name: Deploy to Testnet
 
+# ── Trigger ──────────────────────────────────────────────────────────────────
+# Runs automatically on every push (merge) to main so testnet always reflects
+# the latest main branch state. CI must pass first via the `needs: ci` gate
+# in the deploy job. Closes #266.
 on:
   push:
     branches: [main]
@@ -9,6 +13,8 @@ on:
       - 'Cargo.lock'
       - '.github/workflows/deploy-testnet.yml'
       - 'scripts/deploy.sh'
+  # Also allow manual dispatches for hotfix deployments
+  workflow_dispatch:
 
 concurrency:
   group: deploy-testnet
@@ -16,11 +22,20 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  STELLAR_CLI_VERSION: "22.8.2"
 
 jobs:
+  # ── CI gate ─────────────────────────────────────────────────────────────────
+  # Re-run the full test suite so the deploy can only proceed when tests pass.
+  # This satisfies the "gated on passing CI tests" acceptance criterion (#266).
+  ci:
+    name: CI Gate
+    uses: ./.github/workflows/ci.yml
+
   build:
     name: Build Contracts
     runs-on: ubuntu-latest
+    needs: ci
     outputs:
       wasm-tag: ${{ steps.meta.outputs.tags }}
       wasm-digest: ${{ steps.meta.outputs.digest }}
@@ -31,7 +46,7 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             ~/.cargo/registry
@@ -42,8 +57,16 @@ jobs:
             ${{ runner.os }}-cargo-build-
             ${{ runner.os }}-cargo-
 
+      - name: Cache Stellar CLI binary
+        id: stellar-cli-cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cargo/bin/stellar
+          key: ${{ runner.os }}-stellar-cli-${{ env.STELLAR_CLI_VERSION }}
+
       - name: Install Stellar CLI
-        run: cargo install --locked stellar-cli --features opt
+        if: steps.stellar-cli-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked stellar-cli@${{ env.STELLAR_CLI_VERSION }} --features opt
 
       - name: Build WASM contracts
         run: stellar contract build
@@ -76,12 +99,15 @@ jobs:
     environment:
       name: testnet
       url: https://testnet.stellar.expert
+    outputs:
+      governance-contract-id: ${{ steps.deploy.outputs.governance-contract-id }}
+      token-contract-id: ${{ steps.deploy.outputs.token-contract-id }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             ~/.cargo/registry
@@ -92,8 +118,16 @@ jobs:
             ${{ runner.os }}-cargo-deploy-
             ${{ runner.os }}-cargo-
 
+      - name: Cache Stellar CLI binary
+        id: stellar-cli-cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cargo/bin/stellar
+          key: ${{ runner.os }}-stellar-cli-${{ env.STELLAR_CLI_VERSION }}
+
       - name: Install Stellar CLI
-        run: cargo install --locked stellar-cli --features opt
+        if: steps.stellar-cli-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked stellar-cli@${{ env.STELLAR_CLI_VERSION }} --features opt
 
       - name: Build WASM contracts
         run: stellar contract build
@@ -107,7 +141,6 @@ jobs:
           rpc-url = "https://soroban-testnet.stellar.org"
           network-passphrase = "Test SDF Network ; September 2015"
           NETWORKS_EOF
-          cat ~/.stellar/networks.toml
 
       - name: Verify deployment prerequisites
         run: |
@@ -126,73 +159,41 @@ jobs:
           DEPLOYMENT_ENV: testnet
         run: |
           set -euo pipefail
-          
-          # Verify secrets are configured
-          if [[ -z "$SOROBAN_ACCOUNT" ]]; then
+
+          if [[ -z "${SOROBAN_ACCOUNT:-}" ]]; then
             echo "❌ Error: SOROBAN_ACCOUNT secret not configured"
             exit 1
           fi
-          if [[ -z "$SOROBAN_SECRET_KEY" ]]; then
+          if [[ -z "${SOROBAN_SECRET_KEY:-}" ]]; then
             echo "❌ Error: SOROBAN_SECRET_KEY secret not configured"
             exit 1
           fi
-          
+
           echo "🚀 Starting deployment to testnet..."
-          
-          # Set Stellar CLI credentials
+
           export SOROBAN_RPC_URL="https://soroban-testnet.stellar.org"
           export SOROBAN_NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
-          
-          # Run deployment script
+
           chmod +x scripts/deploy.sh
           NETWORK=testnet ./scripts/deploy.sh 2>&1 | tee deployment.log
-          
-          # Capture deployment output for status
-          DEPLOYMENT_OUTPUT=$(cat deployment.log)
-          echo "deployment-output<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$DEPLOYMENT_OUTPUT" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-          
-          echo "✅ Deployment completed successfully"
 
-      - name: Create deployment report
-        if: always()
-        run: |
-          cat > deployment-report.md << 'REPORT_EOF'
-          # 🚀 Testnet Deployment Report
-          
-          **Timestamp:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')
-          **Git SHA:** ${{ github.sha }}
-          **Branch:** ${{ github.ref_name }}
-          
-          ## Build Information
-          - Build Status: ${{ job.status }}
-          - WASM Tag: ${{ needs.build.outputs.wasm-tag }}
-          
-          ## Deployment Information
-          - Environment: Testnet (Test SDF Network)
-          - RPC URL: https://soroban-testnet.stellar.org
-          - Deployment Status: ${{ steps.deploy.outcome }}
-          - Account: ${{ secrets.SOROBAN_ACCOUNT }}
-          
-          ## Contracts Deployed
-          - votechain_token.wasm
-          - votechain_governance.wasm
-          
-          ## Next Steps
-          1. Verify contracts on testnet explorer: https://testnet.stellar.expert
-          2. Run integration tests against deployed contracts
-          3. Monitor contract events and state changes
-          
-          ## Troubleshooting
-          If deployment failed:
-          - Check Stellar CLI is installed correctly
-          - Verify SOROBAN_ACCOUNT and SOROBAN_SECRET_KEY secrets are set
-          - Ensure account has sufficient testnet XLM balance for deployment
-          - Check network connectivity to https://soroban-testnet.stellar.org
-          
-          REPORT_EOF
-          cat deployment-report.md
+          # ── Extract deployed contract addresses from deploy.sh output ──
+          # deploy.sh is expected to print lines such as:
+          #   GOVERNANCE_CONTRACT_ID=C...
+          #   TOKEN_CONTRACT_ID=C...
+          # If the script writes them to .env.testnet, we source that instead.
+          if [[ -f .env.testnet ]]; then
+            # shellcheck source=/dev/null
+            source .env.testnet
+          else
+            GOVERNANCE_CONTRACT_ID=$(grep -Po '(?<=GOVERNANCE_CONTRACT_ID=)\S+' deployment.log || true)
+            TOKEN_CONTRACT_ID=$(grep -Po '(?<=TOKEN_CONTRACT_ID=)\S+' deployment.log || true)
+          fi
+
+          echo "governance-contract-id=${GOVERNANCE_CONTRACT_ID:-}" >> "$GITHUB_OUTPUT"
+          echo "token-contract-id=${TOKEN_CONTRACT_ID:-}" >> "$GITHUB_OUTPUT"
+
+          echo "✅ Deployment completed successfully"
 
       - name: Upload deployment artifacts
         if: always()
@@ -201,19 +202,57 @@ jobs:
           name: deployment-logs-${{ github.run_id }}
           path: |
             deployment.log
-            deployment-report.md
+            .env.testnet
           retention-days: 30
 
-      - name: Notify deployment status
-        if: always()
+  # ── Write contract addresses back to config/testnet.toml ────────────────────
+  # Satisfies acceptance criterion: "Deployed contract addresses written back to
+  # config/testnet.toml via bot commit" (#266).
+  update-config:
+    name: Write Contract Addresses to config/testnet.toml
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: >-
+      needs.deploy.outputs.governance-contract-id != '' ||
+      needs.deploy.outputs.token-contract-id != ''
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update config/testnet.toml with deployed addresses
+        env:
+          GOVERNANCE_ID: ${{ needs.deploy.outputs.governance-contract-id }}
+          TOKEN_ID: ${{ needs.deploy.outputs.token-contract-id }}
         run: |
-          if [[ "${{ steps.deploy.outcome }}" == "success" ]]; then
-            echo "✅ Deployment to testnet succeeded"
-            echo "📊 View contracts: https://testnet.stellar.expert/search?q=${{ secrets.SOROBAN_ACCOUNT }}"
+          set -euo pipefail
+          CONFIG="config/testnet.toml"
+
+          if [[ -n "$GOVERNANCE_ID" ]]; then
+            sed -i "s|^governance = .*|governance = \"$GOVERNANCE_ID\"|" "$CONFIG"
+          fi
+          if [[ -n "$TOKEN_ID" ]]; then
+            sed -i "s|^token = .*|token = \"$TOKEN_ID\"|" "$CONFIG"
+          fi
+
+          echo "Updated $CONFIG:"
+          cat "$CONFIG"
+
+      - name: Commit updated testnet config
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add config/testnet.toml
+          if git diff --cached --quiet; then
+            echo "No address changes to commit."
           else
-            echo "❌ Deployment to testnet failed"
-            echo "📋 Check logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            exit 1
+            git commit -m "chore(testnet): update deployed contract addresses [skip ci]
+
+Deployed from ${{ github.sha }} by the deploy-testnet workflow (#266)."
+            git push origin HEAD:main
           fi
 
   verify:
@@ -226,53 +265,95 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Stellar CLI binary
+        id: stellar-cli-cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cargo/bin/stellar
+          key: ${{ runner.os }}-stellar-cli-${{ env.STELLAR_CLI_VERSION }}
+
       - name: Install Stellar CLI
-        run: cargo install --locked stellar-cli --features opt
+        if: steps.stellar-cli-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked stellar-cli@${{ env.STELLAR_CLI_VERSION }} --features opt
 
       - name: Verify contracts on testnet
         env:
           SOROBAN_ACCOUNT: ${{ secrets.SOROBAN_ACCOUNT }}
         run: |
           set -euo pipefail
-          
           echo "🔍 Verifying deployed contracts..."
-          
-          # Set testnet RPC
           export SOROBAN_RPC_URL="https://soroban-testnet.stellar.org"
           export SOROBAN_NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
-          
-          # List account contracts
           echo "📋 Contracts for account $SOROBAN_ACCOUNT:"
           stellar contract info --id "$SOROBAN_ACCOUNT" || echo "Contract verification requires additional setup"
-          
           echo "✅ Verification complete"
 
   notify:
     name: Send Notification
     runs-on: ubuntu-latest
-    needs: [build, deploy, verify]
+    needs: [build, deploy, verify, update-config]
     if: always()
     steps:
       - name: Create status summary
         run: |
-          echo "## Testnet Deployment Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Step | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Build | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Deploy | ${{ needs.deploy.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Verify | ${{ needs.verify.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Run:** [View logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          echo "## Testnet Deployment Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Step | Status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| CI Gate | ${{ needs.ci.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Build | ${{ needs.build.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Deploy | ${{ needs.deploy.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Verify | ${{ needs.verify.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Update Config | ${{ needs.update-config.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Commit:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Branch:** ${{ github.ref_name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Run:** [View logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Deployment status
+      - name: Notify Slack on success
         if: needs.deploy.result == 'success'
-        run: echo "✅ Testnet deployment completed successfully"
-
-      - name: Deployment failure notice
-        if: needs.deploy.result == 'failure'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
-          echo "❌ Testnet deployment failed"
-          exit 1
+          if [[ -z "${SLACK_WEBHOOK_URL:-}" ]]; then
+            echo "SLACK_WEBHOOK_URL not configured — skipping Slack notification."
+            exit 0
+          fi
+          curl -sf -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-type: application/json' \
+            --data "{
+              \"text\": \"✅ *Testnet deployment succeeded*\",
+              \"attachments\": [{
+                \"color\": \"good\",
+                \"fields\": [
+                  {\"title\": \"Repository\", \"value\": \"${{ github.repository }}\", \"short\": true},
+                  {\"title\": \"Branch\", \"value\": \"${{ github.ref_name }}\", \"short\": true},
+                  {\"title\": \"Commit\", \"value\": \"\`${{ github.sha }}\`\", \"short\": true},
+                  {\"title\": \"Run\", \"value\": \"<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|View logs>\", \"short\": true}
+                ]
+              }]
+            }"
+
+      - name: Notify Slack on failure
+        if: needs.deploy.result == 'failure' || needs.build.result == 'failure' || needs.ci.result == 'failure'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [[ -z "${SLACK_WEBHOOK_URL:-}" ]]; then
+            echo "SLACK_WEBHOOK_URL not configured — skipping Slack notification."
+            exit 0
+          fi
+          curl -sf -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-type: application/json' \
+            --data "{
+              \"text\": \"❌ *Testnet deployment FAILED*\",
+              \"attachments\": [{
+                \"color\": \"danger\",
+                \"fields\": [
+                  {\"title\": \"Repository\", \"value\": \"${{ github.repository }}\", \"short\": true},
+                  {\"title\": \"Branch\", \"value\": \"${{ github.ref_name }}\", \"short\": true},
+                  {\"title\": \"Commit\", \"value\": \"\`${{ github.sha }}\`\", \"short\": true},
+                  {\"title\": \"Run\", \"value\": \"<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|View logs>\", \"short\": true}
+                ]
+              }]
+            }"

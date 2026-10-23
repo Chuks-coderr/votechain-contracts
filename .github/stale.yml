@@ -1,0 +1,37 @@
+# Configuration for probot-stale - https://github.com/probot/stale
+# Enforced by .github/workflows/stale.yml
+
+# Issues: 60 days of inactivity -> stale; 14 more days -> closed
+daysUntilStale: 60
+daysUntilClose: 14
+
+exemptLabels:
+  - pinned
+  - security
+  - critical
+
+staleLabel: stale
+
+markComment: >
+  This issue has been automatically marked as stale because it has had no
+  activity for 60 days. It will be closed in 14 days if no further activity
+  occurs. To keep it open, leave a comment or remove the `stale` label.
+  If it is closed, you can reopen it at any time or comment asking a
+  maintainer to reopen it.
+
+closeComment: >
+  Closed due to inactivity. If this is still relevant, please reopen it
+  (or comment asking a maintainer to reopen) with any updated details.
+
+# PRs: 30 days of inactivity -> stale; 7 more days -> closed
+pulls:
+  daysUntilStale: 30
+  daysUntilClose: 7
+  markComment: >
+    This pull request has been automatically marked as stale because it has
+    had no activity for 30 days. It will be closed in 7 days if no further
+    activity occurs. Push a commit or leave a comment to keep it open. If it
+    is closed, you can reopen it at any time and continue the work.
+  closeComment: >
+    Closed due to inactivity. Feel free to reopen this pull request when you
+    are ready to continue.

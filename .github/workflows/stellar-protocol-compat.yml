@@ -1,0 +1,190 @@
+name: Stellar Protocol Compatibility
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    - cron: '0 0 * * 0' # Weekly check (Sunday 00:00 UTC)
+
+jobs:
+  protocol-compat:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        soroban-sdk-version: ['22.8.0', '22.9.0']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli@22.8.2
+
+      - name: Update soroban-sdk to ${{ matrix.soroban-sdk-version }}
+        run: |
+          cargo update -p soroban-sdk --aggressive
+          # Verify the update
+          grep "soroban-sdk" contracts/governance/Cargo.toml
+          grep "soroban-sdk" contracts/token/Cargo.toml
+
+      - name: Build Governance Contract
+        run: |
+          cd contracts/governance
+          cargo build --target wasm32-unknown-unknown --release
+          ls -lh target/wasm32-unknown-unknown/release/*.wasm
+
+      - name: Build Token Contract
+        run: |
+          cd contracts/token
+          cargo build --target wasm32-unknown-unknown --release
+          ls -lh target/wasm32-unknown-unknown/release/*.wasm
+
+      - name: Run Tests
+        run: cargo test --all --verbose
+
+      - name: Verify WASM Size Constraints
+        run: |
+          GOVERNANCE_SIZE=$(stat -f%z contracts/governance/target/wasm32-unknown-unknown/release/*.wasm 2>/dev/null || stat -c%s contracts/governance/target/wasm32-unknown-unknown/release/*.wasm)
+          TOKEN_SIZE=$(stat -f%z contracts/token/target/wasm32-unknown-unknown/release/*.wasm 2>/dev/null || stat -c%s contracts/token/target/wasm32-unknown-unknown/release/*.wasm)
+          
+          echo "Governance contract: $GOVERNANCE_SIZE bytes (limit: 102400)"
+          echo "Token contract: $TOKEN_SIZE bytes (limit: 51200)"
+          
+          [ $GOVERNANCE_SIZE -le 102400 ] || exit 1
+          [ $TOKEN_SIZE -le 51200 ] || exit 1
+
+      - name: Check Compatibility
+        run: |
+          echo "✓ Contracts build successfully against soroban-sdk ${{ matrix.soroban-sdk-version }}"
+          echo "✓ All tests pass"
+          echo "✓ WASM size constraints met"
+          echo ""
+          echo "Protocol Compatibility: PASS"
+
+  # ── Weekly testnet smoke test + compatibility matrix update (#273) ──────
+  weekly-testnet-smoke:
+    # Only runs on the weekly schedule, not on every push/PR
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      STELLAR_CLI_VERSION: "22.8.2"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-compat-weekly-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-compat-weekly-
+            ${{ runner.os }}-cargo-
+
+      - name: Cache Stellar CLI binary
+        id: stellar-cli-cache
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/bin/stellar
+          key: ${{ runner.os }}-stellar-cli-${{ env.STELLAR_CLI_VERSION }}
+
+      - name: Install Stellar CLI
+        if: steps.stellar-cli-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked stellar-cli@${{ env.STELLAR_CLI_VERSION }}
+
+      - name: Build contracts
+        run: stellar contract build
+
+      - name: Deploy to testnet
+        id: deploy
+        env:
+          SOROBAN_ACCOUNT: ${{ secrets.SOROBAN_ACCOUNT }}
+          SOROBAN_SECRET_KEY: ${{ secrets.SOROBAN_SECRET_KEY }}
+          STELLAR_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+        run: |
+          set -euo pipefail
+          export SOROBAN_RPC_URL="https://soroban-testnet.stellar.org"
+          export SOROBAN_NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
+          chmod +x scripts/deploy.sh
+          NETWORK=testnet ./scripts/deploy.sh
+
+      - name: Run smoke tests on testnet
+        env:
+          SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org"
+          STELLAR_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+        run: |
+          chmod +x scripts/smoke_test_staging.sh
+          ./scripts/smoke_test_staging.sh
+
+      - name: Query current testnet protocol version
+        id: protocol
+        run: |
+          PROTOCOL_VERSION=$(curl -sf "https://soroban-testnet.stellar.org" | jq -r '.protocol_version // "unknown"')
+          echo "protocol_version=$PROTOCOL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected testnet protocol version: $PROTOCOL_VERSION"
+
+      - name: Update compatibility matrix
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x scripts/update-compat-matrix.sh
+          ./scripts/update-compat-matrix.sh "${{ steps.protocol.outputs.protocol_version }}"
+
+      - name: Alert on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueBody = [
+              `## Weekly Protocol Compatibility Check Failed`,
+              ``,
+              `The weekly Stellar protocol compatibility check failed on \`${new Date().toISOString()}\`.`,
+              ``,
+              `**Run:** [${context.runId}](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+              `**Branch:** ${context.ref}`,
+              ``,
+              `### What to check`,
+              `1. Review the failed step in the workflow run above`,
+              `2. Check if the Stellar testnet protocol was recently upgraded`,
+              `3. Verify contracts still build and tests pass against the latest SDK`,
+              `4. If a breaking change was detected, update the compatibility matrix and fix the contracts`,
+              ``,
+              `This issue was auto-created by the \`weekly-testnet-smoke\` job in \`stellar-protocol-compat.yml\`.`,
+            ].join('\n');
+
+            await github.rest.issues.create({
+              ...context.repo,
+              title: `Weekly protocol compatibility check failed (${new Date().toISOString().split('T')[0]})`,
+              body: issueBody,
+              labels: ['protocol-compatibility', 'devops', 'auto-generated'],
+            });

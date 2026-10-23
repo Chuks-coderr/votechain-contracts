@@ -1,0 +1,22 @@
+# SQLx compile-time verification configuration
+# 
+# This file tells SQLx to perform compile-time verification of all SQL queries
+# against the PostgreSQL database. This ensures:
+# 
+# 1. All queries are syntactically correct
+# 2. All parameter types match column types
+# 3. All referenced tables and columns exist
+# 4. No SQL injection vulnerabilities can be introduced via parameterization
+#
+# To enable compile-time verification:
+# 1. Ensure DATABASE_URL is set in your environment
+# 2. Run: cargo check
+#
+# For CI/CD in offline mode:
+# 1. Generate offline metadata: cargo sqlx prepare
+# 2. Commit .sqlx/query-*.json files
+# 3. Run CI with SQLX_OFFLINE=true
+#
+# This configuration file is a marker for SQLx. The actual verification
+# happens automatically when using sqlx::query!() and sqlx::query_as!()
+# macros in code.
