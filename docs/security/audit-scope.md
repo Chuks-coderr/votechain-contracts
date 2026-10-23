@@ -36,6 +36,19 @@
 | `.github/workflows/ci.yml` | Build, test, and lint pipeline |
 | `.github/workflows/audit.yml` | Automated `cargo audit` dependency scan |
 
+### Indexer & API
+
+| File | Description |
+|------|-------------|
+| `indexer/src/main.rs` | PostgreSQL-backed event indexer: Horizon polling loop, sqlx queries (`last_ledger`, `save_cursor`, `insert_event`, `list_events`, `list_proposal_events`), and REST API endpoints |
+| `api/src/lib.rs` | In-memory indexer library consumed by the backend REST server — **contains no SQL queries** |
+
+**Approved tools — SQL access layer:**
+
+| Tool | Justification |
+|------|---------------|
+| `sqlx` | All SQL queries use parameterised placeholders (`$1`, `$2`, …) bound via `.bind()`. No dynamic query string construction is permitted. Verified by SEC-013. `cargo audit` and `cargo deny` run in CI to detect known-vulnerable sqlx releases. |
+
 ---
 
 ## Out-of-Scope

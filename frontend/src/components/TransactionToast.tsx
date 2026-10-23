@@ -1,4 +1,19 @@
+// Copyright 2024 VoteChain Contributors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 import React from "react";
+import { useTranslation } from "react-i18next";
 import { TxState } from "../hooks/useTransactionStatus";
 
 type Props = {
@@ -8,9 +23,9 @@ type Props = {
 };
 
 const STATUS_LABEL: Record<string, string> = {
-  pending: "⏳ Transaction pending…",
-  confirmed: "✅ Transaction confirmed",
-  failed: "❌ Transaction failed",
+  pending: "transaction.pending",
+  confirmed: "transaction.confirmed",
+  failed: "transaction.failed",
 };
 
 const STATUS_COLOR: Record<string, string> = {
@@ -19,13 +34,22 @@ const STATUS_COLOR: Record<string, string> = {
   failed: "#c62828",
 };
 
+/** Auto-dismiss delay (ms) for confirmed transactions */
+const AUTO_DISMISS_MS = 8000;
+
 export function TransactionToast({ tx, onRetry, onDismiss }: Props) {
+  const { t } = useTranslation();
+
   if (tx.status === "idle" || !tx.hash) return null;
+
+  // Use role="alert" for errors (assertive), role="status" for others (polite)
+  const isError = tx.status === "failed";
 
   return (
     <div
-      role="status"
-      aria-live="polite"
+      role={isError ? "alert" : "status"}
+      aria-live={isError ? "assertive" : "polite"}
+      aria-atomic="true"
       style={{
         position: "fixed",
         bottom: 24,
@@ -41,21 +65,21 @@ export function TransactionToast({ tx, onRetry, onDismiss }: Props) {
       }}
     >
       <div style={{ fontWeight: 600, marginBottom: 4 }}>
-        {STATUS_LABEL[tx.status]}
+        {t(STATUS_LABEL[tx.status])}
       </div>
 
       <div style={{ fontSize: 12, opacity: 0.7, wordBreak: "break-all" }}>
         {tx.hash}
       </div>
 
-      {tx.explorerUrl && (
+      {tx.explorerUrl && tx.status === "confirmed" && (
         <a
           href={tx.explorerUrl}
           target="_blank"
           rel="noreferrer"
           style={{ fontSize: 12, color: "#90caf9", display: "block", marginTop: 4 }}
         >
-          View on Stellar Explorer ↗
+          {t("transaction.viewExplorer")} ↗
         </a>
       )}
 
@@ -70,18 +94,18 @@ export function TransactionToast({ tx, onRetry, onDismiss }: Props) {
           <button
             onClick={onRetry}
             style={{ fontSize: 12, padding: "2px 8px", cursor: "pointer" }}
-            aria-label="Retry transaction"
+            aria-label={t("transaction.retry")}
           >
-            Retry
+            {t("transaction.retryButton")}
           </button>
         )}
         {onDismiss && (
           <button
             onClick={onDismiss}
             style={{ fontSize: 12, padding: "2px 8px", cursor: "pointer" }}
-            aria-label="Dismiss notification"
+            aria-label={t("transaction.dismiss")}
           >
-            Dismiss
+            {t("transaction.dismissButton")}
           </button>
         )}
       </div>

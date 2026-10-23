@@ -1,88 +1,30 @@
-/**
- * Minimal i18n module for VoteChain frontend.
- *
- * Supports English (en) and Spanish (es) locales.
- * Language preference is persisted in localStorage under the key "votechain-lang".
- */
+// Copyright 2024 VoteChain Contributors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-import en from './locales/en.json';
-import es from './locales/es.json';
+import i18n from "i18next";
+import { initReactI18next } from "react-i18next";
+import en from "./locales/en.json";
 
-export type Locale = 'en' | 'es';
+const supportedLanguage = typeof navigator !== "undefined" && navigator.language.toLowerCase().startsWith("en")
+  ? "en"
+  : "en";
 
-export type Translations = typeof en;
+void i18n.use(initReactI18next).init({
+  resources: { en: { translation: en } },
+  lng: supportedLanguage,
+  fallbackLng: "en",
+  interpolation: { escapeValue: false }
+});
 
-const STORAGE_KEY = 'votechain-lang';
-
-const locales: Record<Locale, Translations> = { en, es };
-
-const SUPPORTED_LOCALES: Locale[] = ['en', 'es'];
-
-function isSupportedLocale(value: string): value is Locale {
-  return (SUPPORTED_LOCALES as string[]).includes(value);
-}
-
-/** Resolve the initial locale from localStorage or browser preference. */
-function resolveInitialLocale(): Locale {
-  const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored && isSupportedLocale(stored)) return stored;
-
-  const browserLang = navigator.language.slice(0, 2).toLowerCase();
-  if (isSupportedLocale(browserLang)) return browserLang;
-
-  return 'en';
-}
-
-let currentLocale: Locale = resolveInitialLocale();
-
-const listeners: Array<(locale: Locale) => void> = [];
-
-/**
- * Get the currently active locale.
- */
-export function getLocale(): Locale {
-  return currentLocale;
-}
-
-/**
- * Get the full translations object for the current locale.
- */
-export function getTranslations(): Translations {
-  return locales[currentLocale];
-}
-
-/**
- * Set the active locale, persist to localStorage, and notify subscribers.
- */
-export function setLocale(locale: Locale): void {
-  if (locale === currentLocale) return;
-  currentLocale = locale;
-  localStorage.setItem(STORAGE_KEY, locale);
-  document.documentElement.setAttribute('lang', locale);
-  listeners.forEach((cb) => cb(locale));
-}
-
-/**
- * Subscribe to locale changes. Returns an unsubscribe function.
- */
-export function onLocaleChange(
-  callback: (locale: Locale) => void,
-): () => void {
-  listeners.push(callback);
-  return () => {
-    const idx = listeners.indexOf(callback);
-    if (idx !== -1) listeners.splice(idx, 1);
-  };
-}
-
-/**
- * Convenience hook-style translation helper.
- * Returns the translations for the current locale.
- *
- * Usage (in a React component that re-renders on locale change):
- *   const t = useTranslations();
- *   t.proposals.heading
- */
-export function useTranslations(): Translations {
-  return locales[currentLocale];
-}
+export default i18n;

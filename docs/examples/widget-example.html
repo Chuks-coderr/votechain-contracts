@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VoteChain Widget — Local Integration Example</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 640px;
+      margin: 40px auto;
+      padding: 0 16px;
+      background: #f7fafc;
+    }
+    h1 { font-size: 1.25rem; margin-bottom: 24px; }
+    h2 { font-size: 1rem; margin: 32px 0 12px; }
+    votechain-proposals {
+      display: block;
+      margin-bottom: 32px;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>VoteChain Governance Widget — Embed Examples</h1>
+
+  <h2>Light theme · active proposals · limit 5 (default)</h2>
+  <votechain-proposals
+    api-url="https://api.votechain.dev"
+    theme="light"
+    limit="5"
+    filter-state="active">
+  </votechain-proposals>
+
+  <h2>Dark theme · all proposals · limit 3</h2>
+  <votechain-proposals
+    api-url="https://api.votechain.dev"
+    theme="dark"
+    limit="3"
+    filter-state="">
+  </votechain-proposals>
+
+  <!-- Build frontend/widget/ and serve the repository root over HTTP. -->
+  <script src="../../frontend/widget/dist/votechain-widget.iife.js"></script>
+
+</body>
+</html>
