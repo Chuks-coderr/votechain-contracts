@@ -51,6 +51,7 @@ fn setup_passed_proposal(env: &Env, client: &GovernanceContractClient, admin: &A
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
     let id = client.create_proposal(
         &voter,
@@ -79,6 +80,7 @@ fn setup_active_proposal(env: &Env, client: &GovernanceContractClient, admin: &A
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
     client.create_proposal(
         &proposer,
@@ -119,6 +121,7 @@ fn test_initialize() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     // After initialize: state must be Ready
@@ -162,6 +165,7 @@ fn test_initialize_emits_event() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     // The "init" event must have been published with admin as data
@@ -465,6 +469,7 @@ fn test_execute_rejected_proposal_reverts() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
     // Create a proposal that will be rejected (no votes, below quorum)
     let id = client.create_proposal(
@@ -598,6 +603,67 @@ fn test_update_quorum_exceeding_snapshot_reverts() {
 }
 
 // ── end SC-027 ────────────────────────────────────────────────────────────────
+
+// ── issue #257: MIN_QUORUM_BPS floor tests ────────────────────────────────────
+
+/// Issue #257 — update_quorum must reject a new quorum that falls below the
+/// minimum quorum floor (MIN_QUORUM_BPS = 10 BPS = 0.1 % of supply_snapshot).
+///
+/// supply_snapshot = 10_000_000 → floor = ceil(10_000_000 * 10 / 10_000) = 10_000.
+/// Attempting to set quorum = 9_999 (one below the floor) must revert with
+/// QuorumBelowFloor (error #53).
+#[test]
+#[should_panic(expected = "Error(Contract, #53)")]
+fn test_update_quorum_below_floor_reverts() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let id = create_test_proposal(&t, &proposer);
+
+    // supply_snapshot = 10_000_000; floor = 10_000; 9_999 < floor → revert.
+    t.client.update_quorum(&t.admin, &id, &9_999);
+}
+
+/// Issue #257 — update_quorum must succeed at exactly the floor boundary.
+///
+/// supply_snapshot = 10_000_000 → floor = 10_000.
+/// Setting quorum = 10_000 must succeed.
+#[test]
+fn test_update_quorum_at_floor_boundary_succeeds() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let id = create_test_proposal(&t, &proposer);
+
+    // Exactly at the floor — must succeed.
+    t.client.update_quorum(&t.admin, &id, &10_000);
+    assert_eq!(t.client.get_proposal(&id).quorum, 10_000);
+}
+
+/// Issue #257 — update_quorum must succeed when the new quorum is above the floor.
+#[test]
+fn test_update_quorum_above_floor_succeeds() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let id = create_test_proposal(&t, &proposer);
+
+    // 10_001 > floor (10_000) — must succeed.
+    t.client.update_quorum(&t.admin, &id, &10_001);
+    assert_eq!(t.client.get_proposal(&id).quorum, 10_001);
+}
+
+/// Issue #257 — get_config must expose min_quorum_bps with the protocol default
+/// value when initialize is called with min_quorum_bps = 0.
+#[test]
+fn test_get_config_returns_default_min_quorum_bps() {
+    let t = setup_env();
+    let config = t.client.get_config().unwrap();
+    assert_eq!(
+        config.min_quorum_bps,
+        crate::MIN_QUORUM_BPS,
+        "default min_quorum_bps must equal the protocol constant"
+    );
+}
+
+// ── end issue #257 ────────────────────────────────────────────────────────────
 
 // ── issue #103: cast_vote comment_hash tests ──────────────────────────────────
 
@@ -1158,6 +1224,7 @@ fn test_reinit_by_original_admin_reverts() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 }
 
@@ -1178,6 +1245,7 @@ fn test_reinit_by_new_address_reverts() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 }
 
@@ -1200,6 +1268,7 @@ fn test_reinit_by_zero_address_reverts() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 }
 
@@ -1226,6 +1295,7 @@ fn test_create_proposal_below_min_balance_reverts() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let proposer = Address::generate(&env);
@@ -1256,6 +1326,7 @@ fn test_create_proposal_at_min_balance_accepted() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let proposer = Address::generate(&env);
@@ -1293,6 +1364,7 @@ fn test_create_proposal_within_cooldown_reverts() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let proposer = Address::generate(&env);
@@ -1330,6 +1402,7 @@ fn test_create_proposal_after_cooldown_accepted() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let proposer = Address::generate(&env);
@@ -1371,6 +1444,7 @@ fn test_create_proposal_zero_cooldown_disabled_allows_immediate_second() {
         &false,
         &0_u64,
         &0_u64, // proposal_cooldown = 0 (disabled)
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let proposer = Address::generate(&env);
@@ -1415,6 +1489,7 @@ fn test_create_proposal_exactly_at_cooldown_boundary_accepted() {
         &false,
         &0_u64,
         &3600_u64, // 1 hour cooldown
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let proposer = Address::generate(&env);
@@ -1458,6 +1533,7 @@ fn test_create_proposal_one_second_before_boundary_reverts() {
         &false,
         &0_u64,
         &3600_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let proposer = Address::generate(&env);
@@ -1499,6 +1575,7 @@ fn test_create_proposal_cooldown_resets_after_successful_second_proposal() {
         &false,
         &0_u64,
         &3600_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let proposer = Address::generate(&env);
@@ -1820,6 +1897,7 @@ fn test_admin_can_vote_own_proposal_when_not_restricted() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
     let id = client.create_proposal(
         &admin,
@@ -2170,6 +2248,7 @@ fn test_cancel_reverts_on_non_active_proposal() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     // Create and finalize a proposal to move it out of Active state
@@ -2408,6 +2487,7 @@ fn test_initialize_success() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
     assert_eq!(client.get_state(), ContractState::Ready);
 }
@@ -2430,6 +2510,7 @@ fn test_initialize_sets_version() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
     assert_eq!(client.get_version(), (1, 0, 0));
 }
@@ -2453,6 +2534,7 @@ fn test_initialize_min_balance_enforced() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let proposer = Address::generate(&env); // zero balance
@@ -2516,6 +2598,7 @@ fn test_initialize_already_initialized_reverts() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
     client.initialize(
         &admin,
@@ -2527,6 +2610,7 @@ fn test_initialize_already_initialized_reverts() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 }
 
@@ -2552,6 +2636,7 @@ fn test_initialize_zero_admin_reverts() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 }
 
@@ -2577,6 +2662,7 @@ fn test_initialize_zero_token_reverts() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 }
 
@@ -2758,6 +2844,7 @@ fn test_full_lifecycle_pass_and_execute() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
     assert_eq!(client.get_state(), ContractState::Ready);
 
@@ -2811,6 +2898,7 @@ fn test_full_lifecycle_reject_below_quorum() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let tok = votechain_token::TokenContractClient::new(&env, &token_id);
@@ -2849,6 +2937,7 @@ fn test_full_lifecycle_cancel() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let proposer = Address::generate(&env);
@@ -2886,6 +2975,7 @@ fn test_full_lifecycle_multiple_proposals_isolated() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let tok = votechain_token::TokenContractClient::new(&env, &token_id);
@@ -2952,6 +3042,7 @@ fn test_full_lifecycle_pause_and_unpause() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let tok = votechain_token::TokenContractClient::new(&env, &token_id);
@@ -3169,6 +3260,7 @@ fn test_max_active_proposals_cap_enforced() {
         &false,
         &0_u64,
         &3_u64, // max_active_proposals = 3
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let proposer = Address::generate(&env);
@@ -3214,6 +3306,7 @@ fn test_admin_can_raise_max_proposals() {
         &false,
         &0_u64,
         &2_u64, // cap = 2
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let proposer = Address::generate(&env);
@@ -3581,6 +3674,7 @@ fn test_list_proposals_no_auth_required() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let proposer = Address::generate(&env);
@@ -3638,6 +3732,7 @@ fn test_flash_loan_attack_across_transactions_demonstration() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let proposer = Address::generate(&env);
@@ -3838,6 +3933,7 @@ fn test_execute_parameter_change_min_duration() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     // Create parameter change proposal
@@ -3898,6 +3994,7 @@ fn test_execute_parameter_change_cooldown() {
         &false,
         &0_u64,
         &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     // Create parameter change proposal
