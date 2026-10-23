@@ -1247,6 +1247,10 @@ Copy `.env.example` to `.env` and configure for your environment:
 cp .env.example .env
 ```
 
+The placeholder keys shipped in `.env.example` are intentionally invalid —
+generate a real deployer keypair before use:
+https://developers.stellar.org/docs/build/guides/key-generation
+
 **Environment Variables:**
 ```bash
 # Network selection

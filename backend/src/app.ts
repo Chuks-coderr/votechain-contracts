@@ -101,8 +101,21 @@ const corsOptions: cors.CorsOptions = {
 
 const app = express();
 
-// Security headers — must come before routes
-app.use(helmet());
+// Security headers — must come before routes.
+// helmet()'s defaults don't match our baseline hardening requirements
+// (HSTS max-age, Referrer-Policy), so they're set explicitly here.
+// See docs/security/SEC-012-content-security-policy.md for the CSP policy.
+app.use(
+  helmet({
+    hsts: {
+      maxAge: 31536000, // 1 year, in seconds
+      includeSubDomains: true,
+    },
+    frameguard: { action: "deny" }, // X-Frame-Options: DENY
+    noSniff: true, // X-Content-Type-Options: nosniff
+    referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+  })
+);
 
 // Handle preflight OPTIONS for all routes
 app.options("*", cors(corsOptions));
@@ -117,6 +130,10 @@ app.use(jsonBodyParser());
 // credentials.
 app.get("/metrics", metricsHandler);
 app.use("/", healthRoutes);
+
+// CSP violation reports forwarded by Nginx (SEC-012) — mounted before auth
+// since the browser-originated report never carries an API key.
+app.use("/", cspReportRoutes);
 
 // ── API key authentication & tiered rate limiting ──────────────────────────
 //
