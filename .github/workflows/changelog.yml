@@ -6,17 +6,18 @@ on:
 
 jobs:
   changelog:
-    name: Append changelog entry
+    name: Open changelog PR
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: main
 
-      - name: Build and insert changelog entry
+      - name: Build changelog entry
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           VERSION="${TAG#v}"
@@ -26,9 +27,9 @@ jobs:
             | grep -v "^${TAG}$" | head -n1)
 
           if [ -z "$PREV_TAG" ]; then
-            COMMIT_LOG=$(git log --pretty=format:"%s")
+            COMMIT_LOG=$(git log --pretty=format:"%H%x01%s%x01%b%x02")
           else
-            COMMIT_LOG=$(git log --pretty=format:"%s" "${PREV_TAG}..HEAD")
+            COMMIT_LOG=$(git log --pretty=format:"%H%x01%s%x01%b%x02" "${PREV_TAG}..HEAD")
           fi
 
           cat > /tmp/update_changelog.py << 'EOF'
@@ -39,11 +40,19 @@ import sys
 version = os.environ["CL_VERSION"]
 date    = os.environ["CL_DATE"]
 raw     = os.environ.get("CL_COMMITS", "")
+repo    = "https://github.com/veracindarella/votechain-contracts"
 
-commits = [
-    c.strip() for c in raw.strip().splitlines()
-    if c.strip() and not c.strip().startswith("Merge ")
-]
+# Records are separated by \x02 (ETX); each record is
+# "<sha>\x01<subject>\x01<body>"
+records = [r for r in raw.split("\x02") if r.strip()]
+
+def linkify(text):
+    """Turn bare #123 references into markdown links to issues/PRs."""
+    return re.sub(
+        r'(?<!\[)#(\d+)',
+        lambda m: f'[#{m.group(1)}]({repo}/issues/{m.group(1)})',
+        text,
+    )
 
 sections = {
     "Added":    [],
@@ -52,20 +61,53 @@ sections = {
     "Fixed":    [],
     "Security": [],
 }
+breaking = []
 
-for c in commits:
-    if re.match(r'^feat(\(.+\))?!?:', c):
-        sections["Added"].append(re.sub(r'^feat(\(.+\))?!?:\s*', '', c))
-    elif re.match(r'^fix(\(.+\))?!?:', c):
-        sections["Fixed"].append(re.sub(r'^fix(\(.+\))?!?:\s*', '', c))
-    elif re.match(r'^(refactor|chore|perf|build|ci)(\(.+\))?!?:', c):
-        sections["Changed"].append(re.sub(r'^[^:]+:\s*', '', c))
-    elif re.match(r'^(remove|revert)(\(.+\))?!?:', c):
-        sections["Removed"].append(re.sub(r'^[^:]+:\s*', '', c))
-    elif re.match(r'^security(\(.+\))?!?:', c):
-        sections["Security"].append(re.sub(r'^[^:]+:\s*', '', c))
+TYPE_RE = re.compile(r'^(?P<type>feat|fix|refactor|chore|perf|build|ci|security|remove|revert|docs|test)'
+                      r'(?:\((?P<scope>[^)]*)\))?(?P<bang>!)?:\s*(?P<desc>.+)$')
+
+for rec in records:
+    parts = rec.split("\x01", 2)
+    if len(parts) != 3:
+        continue
+    sha, subject, body = parts
+    subject = subject.strip()
+    body = body.strip()
+    if not subject or subject.startswith("Merge "):
+        continue
+
+    m = TYPE_RE.match(subject)
+    is_breaking = bool(m and m.group("bang")) or "BREAKING CHANGE" in body
+    short_sha = sha[:7]
+    entry_text = linkify(m.group("desc") if m else subject)
+    entry_text += f" ([{short_sha}]({repo}/commit/{sha}))"
+
+    if is_breaking:
+        breaking_desc = entry_text
+        breaking_match = re.search(r'BREAKING CHANGE:\s*(.+)', body)
+        if breaking_match:
+            breaking_desc = f"{linkify(m.group('desc') if m else subject)} — {linkify(breaking_match.group(1).strip())} ([{short_sha}]({repo}/commit/{sha}))"
+        breaking.append(breaking_desc)
+
+    if not m:
+        continue
+
+    t = m.group("type")
+    if t == "feat":
+        sections["Added"].append(entry_text)
+    elif t == "fix":
+        sections["Fixed"].append(entry_text)
+    elif t in ("refactor", "chore", "perf", "build", "ci", "docs", "test"):
+        sections["Changed"].append(entry_text)
+    elif t in ("remove", "revert"):
+        sections["Removed"].append(entry_text)
+    elif t == "security":
+        sections["Security"].append(entry_text)
 
 lines = [f"\n## [{version}] - {date}"]
+if breaking:
+    lines.append("\n### ⚠️ BREAKING CHANGES")
+    lines.extend(f"- {i}" for i in breaking)
 for name, items in sections.items():
     if items:
         lines.append(f"\n### {name}")
@@ -86,8 +128,6 @@ if ins == -1:
 else:
     content = content[:ins] + entry + content[ins:]
 
-# Update the comparison link for [Unreleased] and add the new release link
-repo = "https://github.com/veracindarella/votechain-contracts"
 prev_ver = os.environ.get("CL_PREV_TAG", "").lstrip("v")
 unreleased_link = f"[Unreleased]: {repo}/compare/v{version}...HEAD"
 
@@ -105,6 +145,7 @@ with open("CHANGELOG.md", "w") as f:
     f.write(content)
 
 print(f"Changelog updated for v{version}")
+print(f"HAS_BREAKING={'1' if breaking else '0'}")
 EOF
 
           CL_VERSION="$VERSION" \
@@ -113,16 +154,33 @@ EOF
           CL_PREV_TAG="$PREV_TAG" \
           python3 /tmp/update_changelog.py
 
-      - name: Commit updated CHANGELOG.md
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Open changelog pull request
+        id: cpr
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: update CHANGELOG for ${{ env.TAG }} [skip ci]"
+          branch: "changelog/${{ env.TAG }}"
+          delete-branch: true
+          title: "chore: changelog for ${{ env.TAG }}"
+          body: |
+            Automated changelog entry generated from conventional commits
+            between the previous tag and `${{ env.TAG }}`.
+
+            This PR was opened automatically by the `changelog.yml` workflow
+            and will auto-merge once required checks pass and it is approved.
+          add-paths: CHANGELOG.md
+          labels: changelog, automated
+
+      - name: Enable auto-merge
+        if: steps.cpr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add CHANGELOG.md
-          if git diff --staged --quiet; then
-            echo "No changelog changes to commit."
-            exit 0
-          fi
-          git commit -m "chore: update CHANGELOG for ${TAG} [skip ci]"
-          # Push to main; if branch protection blocks it, skip gracefully.
-          git push origin HEAD:main || echo "Push skipped (branch protection active)."
+          gh pr merge --auto --squash \
+            "${{ steps.cpr.outputs.pull-request-number }}" \
+            --repo "${{ github.repository }}" \
+            || echo "Auto-merge could not be enabled (branch protection may require manual merge)."

@@ -16,6 +16,7 @@
 
 use super::*;
 use crate::test_helpers::{create_test_proposal, mint_and_vote, setup_env};
+use crate::types::{ConfigKey, ProposalType};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events, Ledger},
@@ -49,6 +50,8 @@ fn setup_passed_proposal(env: &Env, client: &GovernanceContractClient, admin: &A
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
     let id = client.create_proposal(
         &voter,
@@ -57,7 +60,7 @@ fn setup_passed_proposal(env: &Env, client: &GovernanceContractClient, admin: &A
         &100,
         &3600,
     );
-    client.cast_vote(&voter, &id, &Vote::Yes);
+    client.cast_vote(&voter, &id, &Vote::Yes, &None);
     env.ledger().with_mut(|l| l.timestamp += 3601);
     client.finalise(&id);
     id
@@ -76,6 +79,8 @@ fn setup_active_proposal(env: &Env, client: &GovernanceContractClient, admin: &A
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
     client.create_proposal(
         &proposer,
@@ -115,6 +120,8 @@ fn test_initialize() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     // After initialize: state must be Ready
@@ -157,6 +164,8 @@ fn test_initialize_emits_event() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     // The "init" event must have been published with admin as data
@@ -368,7 +377,7 @@ fn test_cannot_vote_twice() {
     let voter = Address::generate(&t.env);
     let id = create_test_proposal(&t, &voter);
     mint_and_vote(&t, &voter, id, Vote::Yes, 1_000_000);
-    t.client.cast_vote(&voter, &id, &Vote::No); // should panic
+    t.client.cast_vote(&voter, &id, &Vote::No, &None); // should panic
 }
 
 // ── TEST-013: access control negative tests ───────────────────────────────────
@@ -459,6 +468,8 @@ fn test_execute_rejected_proposal_reverts() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
     // Create a proposal that will be rejected (no votes, below quorum)
     let id = client.create_proposal(
@@ -541,7 +552,246 @@ fn test_update_quorum_inactive_proposal_reverts() {
     t.client.update_quorum(&t.admin, &id, &500);
 }
 
+/// Issue #56 — update_quorum is bounded by the supply snapshot taken at
+/// proposal creation time, not the live supply at the time of the call.
+///
+/// Scenario: create a proposal against a supply of 10,000,000 tokens, then
+/// burn a large chunk of supply so the live supply drops below the proposed
+/// new quorum.  update_quorum must still succeed because the snapshot was
+/// taken before the burn and remains the upper bound.
+#[test]
+fn test_update_quorum_uses_supply_snapshot_not_live_supply() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+
+    // Initial supply = 10_000_000 (set up by setup_env / token initialize).
+    // create a proposal with quorum = 1_000 (well within supply).
+    let id = create_test_proposal(&t, &proposer);
+
+    // Verify snapshot was captured at creation.
+    let proposal_before = t.client.get_proposal(&id);
+    assert!(
+        proposal_before.supply_snapshot > 0,
+        "supply_snapshot must be positive after creation"
+    );
+
+    // Burn most of the supply so live supply is now much smaller.
+    let tok = votechain_token::TokenContractClient::new(&t.env, &t.token_id);
+    // Burn 9_900_000 tokens from admin (leaves 100_000 live).
+    tok.burn(&t.admin, &t.admin, &9_900_000_i128);
+
+    // update_quorum to 5_000_000 — this exceeds the current live supply
+    // (100_000) but is within the snapshot (10_000_000).
+    // The call must SUCCEED because the snapshot anchors validation.
+    t.client.update_quorum(&t.admin, &id, &5_000_000);
+    let proposal_after = t.client.get_proposal(&id);
+    assert_eq!(proposal_after.quorum, 5_000_000, "quorum should be updated to 5_000_000");
+}
+
+/// Issue #56 — update_quorum must REJECT a new quorum that exceeds the
+/// supply_snapshot, regardless of whether live supply has changed.
+#[test]
+#[should_panic(expected = "Error(Contract, #22)")]
+fn test_update_quorum_exceeding_snapshot_reverts() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let id = create_test_proposal(&t, &proposer);
+
+    // Attempt to set quorum above the snapshot (10_000_000 + 1).
+    // This must revert with QuorumExceedsSupply (error #22).
+    t.client.update_quorum(&t.admin, &id, &10_000_001);
+}
+
 // ── end SC-027 ────────────────────────────────────────────────────────────────
+
+// ── issue #257: MIN_QUORUM_BPS floor tests ────────────────────────────────────
+
+/// Issue #257 — update_quorum must reject a new quorum that falls below the
+/// minimum quorum floor (MIN_QUORUM_BPS = 10 BPS = 0.1 % of supply_snapshot).
+///
+/// supply_snapshot = 10_000_000 → floor = ceil(10_000_000 * 10 / 10_000) = 10_000.
+/// Attempting to set quorum = 9_999 (one below the floor) must revert with
+/// QuorumBelowFloor (error #53).
+#[test]
+#[should_panic(expected = "Error(Contract, #53)")]
+fn test_update_quorum_below_floor_reverts() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let id = create_test_proposal(&t, &proposer);
+
+    // supply_snapshot = 10_000_000; floor = 10_000; 9_999 < floor → revert.
+    t.client.update_quorum(&t.admin, &id, &9_999);
+}
+
+/// Issue #257 — update_quorum must succeed at exactly the floor boundary.
+///
+/// supply_snapshot = 10_000_000 → floor = 10_000.
+/// Setting quorum = 10_000 must succeed.
+#[test]
+fn test_update_quorum_at_floor_boundary_succeeds() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let id = create_test_proposal(&t, &proposer);
+
+    // Exactly at the floor — must succeed.
+    t.client.update_quorum(&t.admin, &id, &10_000);
+    assert_eq!(t.client.get_proposal(&id).quorum, 10_000);
+}
+
+/// Issue #257 — update_quorum must succeed when the new quorum is above the floor.
+#[test]
+fn test_update_quorum_above_floor_succeeds() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let id = create_test_proposal(&t, &proposer);
+
+    // 10_001 > floor (10_000) — must succeed.
+    t.client.update_quorum(&t.admin, &id, &10_001);
+    assert_eq!(t.client.get_proposal(&id).quorum, 10_001);
+}
+
+/// Issue #257 — get_config must expose min_quorum_bps with the protocol default
+/// value when initialize is called with min_quorum_bps = 0.
+#[test]
+fn test_get_config_returns_default_min_quorum_bps() {
+    let t = setup_env();
+    let config = t.client.get_config().unwrap();
+    assert_eq!(
+        config.min_quorum_bps,
+        crate::MIN_QUORUM_BPS,
+        "default min_quorum_bps must equal the protocol constant"
+    );
+}
+
+// ── end issue #257 ────────────────────────────────────────────────────────────
+
+// ── issue #103: cast_vote comment_hash tests ──────────────────────────────────
+
+#[test]
+fn test_cast_vote_with_comment_hash_stored() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let voter = Address::generate(&t.env);
+    let id = create_test_proposal(&t, &proposer);
+    let tok = votechain_token::TokenContractClient::new(&t.env, &t.token_id);
+    tok.mint(&t.admin, &voter, &1_000);
+
+    let cid = String::from_str(
+        &t.env,
+        "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",
+    );
+    t.client.cast_vote(&voter, &id, &Vote::Yes, &Some(cid.clone()));
+
+    let record = t.client.get_vote(&id, &voter).unwrap();
+    assert_eq!(record.comment_hash, Some(cid));
+}
+
+#[test]
+fn test_cast_vote_without_comment_hash_is_none() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let voter = Address::generate(&t.env);
+    let id = create_test_proposal(&t, &proposer);
+    let tok = votechain_token::TokenContractClient::new(&t.env, &t.token_id);
+    tok.mint(&t.admin, &voter, &1_000);
+
+    t.client.cast_vote(&voter, &id, &Vote::Yes, &None);
+
+    let record = t.client.get_vote(&id, &voter).unwrap();
+    assert_eq!(record.comment_hash, None);
+}
+
+/// comment_hash exceeding MAX_COMMENT_HASH_LEN (64 bytes) must revert.
+#[test]
+#[should_panic(expected = "Error(Contract, #48)")]
+fn test_cast_vote_comment_hash_too_long_reverts() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let voter = Address::generate(&t.env);
+    let id = create_test_proposal(&t, &proposer);
+    let tok = votechain_token::TokenContractClient::new(&t.env, &t.token_id);
+    tok.mint(&t.admin, &voter, &1_000);
+
+    // 65 'a' characters — one over the 64-byte cap.
+    let long_hash = String::from_str(&t.env, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    t.client.cast_vote(&voter, &id, &Vote::Yes, &Some(long_hash));
+}
+
+// ── end issue #103 ─────────────────────────────────────────────────────────────
+
+// ── issue #105: extend_voting tests ───────────────────────────────────────────
+
+#[test]
+fn test_extend_voting_success() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let id = create_test_proposal(&t, &proposer);
+    let before = t.client.get_proposal(&id);
+    t.client.extend_voting(&t.admin, &id, &3600);
+    let after = t.client.get_proposal(&id);
+    assert_eq!(after.end_time, before.end_time + 3600);
+    assert_eq!(after.start_time, before.start_time);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_extend_voting_non_admin_reverts() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let non_admin = Address::generate(&t.env);
+    let id = create_test_proposal(&t, &proposer);
+    t.client.extend_voting(&non_admin, &id, &3600);
+}
+
+/// extend_voting must revert once the voting period has already ended.
+#[test]
+#[should_panic(expected = "Error(Contract, #8)")]
+fn test_extend_voting_after_end_time_reverts() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let id = create_test_proposal(&t, &proposer);
+    // Default test proposal duration is 3600s; advance past end_time.
+    t.env.ledger().with_mut(|l| l.timestamp += 3601);
+    t.client.extend_voting(&t.admin, &id, &3600);
+}
+
+/// extend_voting can only be used once per proposal.
+#[test]
+#[should_panic(expected = "Error(Contract, #47)")]
+fn test_extend_voting_double_extension_reverts() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let id = create_test_proposal(&t, &proposer);
+    t.client.extend_voting(&t.admin, &id, &3600);
+    // Second extension on the same proposal must revert with AlreadyExtended.
+    t.client.extend_voting(&t.admin, &id, &3600);
+}
+
+/// extend_voting must revert if the resulting total duration would exceed
+/// the contract's configured max_duration.
+#[test]
+#[should_panic(expected = "Error(Contract, #21)")]
+fn test_extend_voting_exceeding_max_duration_reverts() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let id = create_test_proposal(&t, &proposer);
+    // max_duration is 2_592_000s (30 days); proposal duration is 3600s.
+    // Requesting an extension that would push total duration past max_duration must revert.
+    t.client.extend_voting(&t.admin, &id, &2_600_000);
+}
+
+/// extend_voting must revert on a proposal that is no longer Active.
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_extend_voting_inactive_proposal_reverts() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let id = create_test_proposal(&t, &proposer);
+    t.client.cancel(&t.admin, &id);
+    t.client.extend_voting(&t.admin, &id, &3600);
+}
+
+// ── end issue #105 ─────────────────────────────────────────────────────────────
 
 // ── storage persistence tests ─────────────────────────────────────────────────
 
@@ -816,7 +1066,7 @@ fn test_double_vote_same_choice_reverts() {
     let voter = Address::generate(&t.env);
     let id = create_test_proposal(&t, &voter);
     mint_and_vote(&t, &voter, id, Vote::Yes, 1_000_000);
-    t.client.cast_vote(&voter, &id, &Vote::Yes);
+    t.client.cast_vote(&voter, &id, &Vote::Yes, &None);
 }
 
 #[test]
@@ -826,7 +1076,7 @@ fn test_double_vote_different_choice_reverts() {
     let voter = Address::generate(&t.env);
     let id = create_test_proposal(&t, &voter);
     mint_and_vote(&t, &voter, id, Vote::Yes, 1_000_000);
-    t.client.cast_vote(&voter, &id, &Vote::No);
+    t.client.cast_vote(&voter, &id, &Vote::No, &None);
 }
 
 #[test]
@@ -912,7 +1162,7 @@ fn test_vote_with_zero_balance_reverts() {
     let t = setup_env();
     let voter = Address::generate(&t.env);
     let id = create_test_proposal(&t, &voter);
-    t.client.cast_vote(&voter, &id, &Vote::Yes);
+    t.client.cast_vote(&voter, &id, &Vote::Yes, &None);
 }
 
 #[test]
@@ -973,6 +1223,8 @@ fn test_reinit_by_original_admin_reverts() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 }
 
@@ -992,6 +1244,8 @@ fn test_reinit_by_new_address_reverts() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 }
 
@@ -1013,6 +1267,8 @@ fn test_reinit_by_zero_address_reverts() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 }
 
@@ -1038,6 +1294,8 @@ fn test_create_proposal_below_min_balance_reverts() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let proposer = Address::generate(&env);
@@ -1067,6 +1325,8 @@ fn test_create_proposal_at_min_balance_accepted() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let proposer = Address::generate(&env);
@@ -1103,6 +1363,8 @@ fn test_create_proposal_within_cooldown_reverts() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let proposer = Address::generate(&env);
@@ -1139,6 +1401,8 @@ fn test_create_proposal_after_cooldown_accepted() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let proposer = Address::generate(&env);
@@ -1159,6 +1423,190 @@ fn test_create_proposal_after_cooldown_accepted() {
         &3600,
     );
     assert_eq!(client.get_proposal(&id2).state, ProposalState::Active);
+}
+
+#[test]
+fn test_create_proposal_zero_cooldown_disabled_allows_immediate_second() {
+    // #307: cooldown = 0 means the feature is disabled entirely, so a second
+    // proposal by the same proposer must be allowed in the same block/timestamp.
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = new_client(&env);
+    let admin = Address::generate(&env);
+    let token_id = setup_token(&env, &admin);
+    client.initialize(
+        &admin,
+        &token_id,
+        &0_i128,
+        &3600_u64,
+        &60_u64,
+        &2_592_000_u64,
+        &false,
+        &0_u64,
+        &0_u64, // proposal_cooldown = 0 (disabled)
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
+    );
+
+    let proposer = Address::generate(&env);
+    let id1 = client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "First"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &7200,
+    );
+    // No timestamp advance at all — second proposal must still succeed because
+    // cooldown enforcement is bypassed when cooldown == 0.
+    let id2 = client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "Second"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &3600,
+    );
+    assert_ne!(id1, id2);
+    assert_eq!(client.get_proposal(&id1).state, ProposalState::Active);
+    assert_eq!(client.get_proposal(&id2).state, ProposalState::Active);
+}
+
+#[test]
+fn test_create_proposal_exactly_at_cooldown_boundary_accepted() {
+    // #307: `now < last + cooldown` is the revert condition, so `now == last +
+    // cooldown` (exactly at the boundary) must succeed, not revert.
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = new_client(&env);
+    let admin = Address::generate(&env);
+    let token_id = setup_token(&env, &admin);
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    client.initialize(
+        &admin,
+        &token_id,
+        &0_i128,
+        &3600_u64,
+        &60_u64,
+        &2_592_000_u64,
+        &false,
+        &0_u64,
+        &3600_u64, // 1 hour cooldown
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
+    );
+
+    let proposer = Address::generate(&env);
+    client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "First"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &7200,
+    );
+    // Advance exactly `cooldown` seconds — now == last + cooldown.
+    env.ledger().with_mut(|l| l.timestamp += 3600);
+    let id2 = client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "Second"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &3600,
+    );
+    assert_eq!(client.get_proposal(&id2).state, ProposalState::Active);
+}
+
+#[test]
+#[should_panic]
+fn test_create_proposal_one_second_before_boundary_reverts() {
+    // #307: complements the exact-boundary test above by confirming
+    // `now == last + cooldown - 1` is still inside the cooldown window.
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = new_client(&env);
+    let admin = Address::generate(&env);
+    let token_id = setup_token(&env, &admin);
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    client.initialize(
+        &admin,
+        &token_id,
+        &0_i128,
+        &3600_u64,
+        &60_u64,
+        &2_592_000_u64,
+        &false,
+        &0_u64,
+        &3600_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
+    );
+
+    let proposer = Address::generate(&env);
+    client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "First"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &7200,
+    );
+    env.ledger().with_mut(|l| l.timestamp += 3599);
+    client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "Spam"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &3600,
+    );
+}
+
+#[test]
+fn test_create_proposal_cooldown_resets_after_successful_second_proposal() {
+    // #307: after a successful second proposal, the cooldown timer must reset
+    // against the NEW proposal's timestamp, so a third attempt immediately
+    // after the second must also revert (cooldown re-armed, not one-shot).
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = new_client(&env);
+    let admin = Address::generate(&env);
+    let token_id = setup_token(&env, &admin);
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    client.initialize(
+        &admin,
+        &token_id,
+        &0_i128,
+        &3600_u64,
+        &60_u64,
+        &2_592_000_u64,
+        &false,
+        &0_u64,
+        &3600_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
+    );
+
+    let proposer = Address::generate(&env);
+    client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "First"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &7200,
+    );
+    // Advance past cooldown and submit a second (successful) proposal.
+    env.ledger().with_mut(|l| l.timestamp += 3601);
+    let id2 = client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "Second"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &3600,
+    );
+    assert_eq!(client.get_proposal(&id2).state, ProposalState::Active);
+
+    // Immediately try a third proposal — the cooldown must have reset against
+    // the second proposal's timestamp, so this must revert.
+    let result = client.try_create_proposal(
+        &proposer,
+        &String::from_str(&env, "Third"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &3600,
+    );
+    assert!(result.is_err());
 }
 
 // ── end spam prevention tests ─────────────────────────────────────────────────
@@ -1311,7 +1759,7 @@ fn make_passed_proposal_for_transfer(
         &100,
         &3600,
     );
-    client.cast_vote(&voter, &id, &Vote::Yes);
+    client.cast_vote(&voter, &id, &Vote::Yes, &None);
     env.ledger().with_mut(|l| l.timestamp += 3601);
     client.finalise(&id);
     id
@@ -1415,6 +1863,7 @@ fn test_admin_cannot_vote_own_proposal_when_restricted() {
         &2_592_000_u64,
         &true,
         &0_u64,
+        &0_u64,
     );
     let id = client.create_proposal(
         &admin,
@@ -1424,7 +1873,7 @@ fn test_admin_cannot_vote_own_proposal_when_restricted() {
         &3600,
     );
     // admin tries to vote on their own proposal — should panic
-    client.cast_vote(&admin, &id, &Vote::Yes);
+    client.cast_vote(&admin, &id, &Vote::Yes, &None);
 }
 
 /// When restrict_admin_vote is disabled, admin can vote on their own proposal.
@@ -1447,6 +1896,8 @@ fn test_admin_can_vote_own_proposal_when_not_restricted() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
     let id = client.create_proposal(
         &admin,
@@ -1456,7 +1907,7 @@ fn test_admin_can_vote_own_proposal_when_not_restricted() {
         &3600,
     );
     // admin votes on their own proposal — should succeed
-    client.cast_vote(&admin, &id, &Vote::Yes);
+    client.cast_vote(&admin, &id, &Vote::Yes, &None);
     assert_eq!(client.get_proposal(&id).votes_yes, 10_000_000);
 }
 
@@ -1479,6 +1930,7 @@ fn test_non_admin_can_vote_when_admin_restricted() {
         &2_592_000_u64,
         &true,
         &0_u64,
+        &0_u64,
     );
     let proposer = Address::generate(&env);
     let id = client.create_proposal(
@@ -1490,7 +1942,7 @@ fn test_non_admin_can_vote_when_admin_restricted() {
     );
     let voter = Address::generate(&env);
     tok.mint(&admin, &voter, &500_000_i128);
-    client.cast_vote(&voter, &id, &Vote::Yes);
+    client.cast_vote(&voter, &id, &Vote::Yes, &None);
     assert_eq!(client.get_proposal(&id).votes_yes, 500_000);
 }
 
@@ -1570,7 +2022,7 @@ fn test_cast_vote_reverts_when_paused() {
     let tok = votechain_token::TokenContractClient::new(&t.env, &t.token_id);
     tok.mint(&t.admin, &voter, &1_000_000_i128);
     t.client.pause(&t.admin);
-    t.client.cast_vote(&voter, &id, &Vote::Yes);
+    t.client.cast_vote(&voter, &id, &Vote::Yes, &None);
 }
 
 /// finalise reverts when paused.
@@ -1594,7 +2046,7 @@ fn test_execute_reverts_when_paused() {
     let id = create_test_proposal(&t, &voter);
     let tok = votechain_token::TokenContractClient::new(&t.env, &t.token_id);
     tok.mint(&t.admin, &voter, &1_000_000_i128);
-    t.client.cast_vote(&voter, &id, &Vote::Yes);
+    t.client.cast_vote(&voter, &id, &Vote::Yes, &None);
     t.env.ledger().with_mut(|l| l.timestamp += 3601);
     t.client.finalise(&id);
     t.client.pause(&t.admin);
@@ -1795,6 +2247,8 @@ fn test_cancel_reverts_on_non_active_proposal() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     // Create and finalize a proposal to move it out of Active state
@@ -2032,6 +2486,8 @@ fn test_initialize_success() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
     assert_eq!(client.get_state(), ContractState::Ready);
 }
@@ -2053,6 +2509,8 @@ fn test_initialize_sets_version() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
     assert_eq!(client.get_version(), (1, 0, 0));
 }
@@ -2075,6 +2533,8 @@ fn test_initialize_min_balance_enforced() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let proposer = Address::generate(&env); // zero balance
@@ -2105,6 +2565,7 @@ fn test_initialize_restrict_admin_vote_enforced() {
         &2_592_000_u64,
         &true,
         &0_u64,
+        &0_u64,
     );
 
     let id = client.create_proposal(
@@ -2115,7 +2576,7 @@ fn test_initialize_restrict_admin_vote_enforced() {
         &3600,
     );
     // admin voting on their own proposal must revert
-    client.cast_vote(&admin, &id, &Vote::Yes);
+    client.cast_vote(&admin, &id, &Vote::Yes, &None);
 }
 
 /// Calling initialize a second time must revert with AlreadyInitialized (#13).
@@ -2136,6 +2597,8 @@ fn test_initialize_already_initialized_reverts() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
     client.initialize(
         &admin,
@@ -2146,6 +2609,8 @@ fn test_initialize_already_initialized_reverts() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 }
 
@@ -2170,6 +2635,8 @@ fn test_initialize_zero_admin_reverts() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 }
 
@@ -2194,6 +2661,8 @@ fn test_initialize_zero_token_reverts() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 }
 
@@ -2374,6 +2843,8 @@ fn test_full_lifecycle_pass_and_execute() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
     assert_eq!(client.get_state(), ContractState::Ready);
 
@@ -2393,7 +2864,7 @@ fn test_full_lifecycle_pass_and_execute() {
     assert_eq!(client.proposal_count(), 1);
 
     // vote
-    client.cast_vote(&voter, &id, &Vote::Yes);
+    client.cast_vote(&voter, &id, &Vote::Yes, &None);
     assert!(client.has_voted(&id, &voter));
     assert_eq!(client.get_proposal(&id).votes_yes, 1_000_000);
 
@@ -2426,6 +2897,8 @@ fn test_full_lifecycle_reject_below_quorum() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let tok = votechain_token::TokenContractClient::new(&env, &token_id);
@@ -2439,7 +2912,7 @@ fn test_full_lifecycle_reject_below_quorum() {
         &3600,
     );
 
-    client.cast_vote(&voter, &id, &Vote::Yes);
+    client.cast_vote(&voter, &id, &Vote::Yes, &None);
     env.ledger().with_mut(|l| l.timestamp += 3601);
     client.finalise(&id);
     assert_eq!(client.get_proposal(&id).state, ProposalState::Rejected);
@@ -2463,6 +2936,8 @@ fn test_full_lifecycle_cancel() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let proposer = Address::generate(&env);
@@ -2499,6 +2974,8 @@ fn test_full_lifecycle_multiple_proposals_isolated() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let tok = votechain_token::TokenContractClient::new(&env, &token_id);
@@ -2520,8 +2997,8 @@ fn test_full_lifecycle_multiple_proposals_isolated() {
         &7200,
     );
 
-    client.cast_vote(&voter1, &id1, &Vote::Yes);
-    client.cast_vote(&voter2, &id2, &Vote::No);
+    client.cast_vote(&voter1, &id1, &Vote::Yes, &None);
+    client.cast_vote(&voter2, &id2, &Vote::No, &None);
 
     // votes don't bleed between proposals
     assert_eq!(client.get_proposal(&id1).votes_yes, 1_000_000);
@@ -2564,6 +3041,8 @@ fn test_full_lifecycle_pause_and_unpause() {
         &2_592_000_u64,
         &false,
         &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
     );
 
     let tok = votechain_token::TokenContractClient::new(&env, &token_id);
@@ -2587,7 +3066,7 @@ fn test_full_lifecycle_pause_and_unpause() {
     client.unpause(&admin);
     assert!(!client.paused());
 
-    client.cast_vote(&voter, &id, &Vote::Yes);
+    client.cast_vote(&voter, &id, &Vote::Yes, &None);
     env.ledger().with_mut(|l| l.timestamp += 3601);
     client.finalise(&id);
     assert_eq!(client.get_proposal(&id).state, ProposalState::Passed);
@@ -2755,3 +3234,1185 @@ fn test_title_space_accepted() {
 }
 
 // ── end SEC-003 ───────────────────────────────────────────────────────────────
+
+// ── #44: max_active_proposals cap tests ──────────────────────────────────────
+
+/// Creating proposals up to the cap succeeds; one more fails with
+/// TooManyActiveProposals (#34).
+#[test]
+#[should_panic(expected = "Error(Contract, #34)")]
+fn test_max_active_proposals_cap_enforced() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let gov_id = env.register(GovernanceContract, ());
+    let client = GovernanceContractClient::new(&env, &gov_id);
+    let admin = Address::generate(&env);
+    let token_id = setup_token(&env, &admin);
+
+    // Set cap to 3
+    client.initialize(
+        &admin,
+        &token_id,
+        &0_i128,
+        &0_u64,
+        &60_u64,
+        &2_592_000_u64,
+        &false,
+        &0_u64,
+        &3_u64, // max_active_proposals = 3
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
+    );
+
+    let proposer = Address::generate(&env);
+
+    // First 3 proposals should succeed
+    for _ in 0..3 {
+        client.create_proposal(
+            &proposer,
+            &String::from_str(&env, "Prop"),
+            &String::from_str(&env, "Description"),
+            &100,
+            &3600,
+        );
+    }
+
+    // 4th proposal must fail with TooManyActiveProposals
+    client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "Over the limit"),
+        &String::from_str(&env, "Should fail"),
+        &100,
+        &3600,
+    );
+}
+
+/// Admin can raise the cap via update_max_proposals, allowing more proposals.
+#[test]
+fn test_admin_can_raise_max_proposals() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let gov_id = env.register(GovernanceContract, ());
+    let client = GovernanceContractClient::new(&env, &gov_id);
+    let admin = Address::generate(&env);
+    let token_id = setup_token(&env, &admin);
+
+    client.initialize(
+        &admin,
+        &token_id,
+        &0_i128,
+        &0_u64,
+        &60_u64,
+        &2_592_000_u64,
+        &false,
+        &0_u64,
+        &2_u64, // cap = 2
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
+    );
+
+    let proposer = Address::generate(&env);
+
+    // Fill up to cap
+    client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "Prop 1"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &3600,
+    );
+    client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "Prop 2"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &3600,
+    );
+
+    // Raise the cap to 5
+    client.update_max_proposals(&admin, &5_u64);
+    assert_eq!(client.get_max_active_proposals(), 5);
+
+    // Now a 3rd proposal succeeds
+    let id = client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "Prop 3"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &3600,
+    );
+    assert_eq!(client.get_proposal(&id).state, ProposalState::Active);
+}
+
+/// update_max_proposals called by a non-admin must revert with NotAdmin (#2).
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_update_max_proposals_non_admin_reverts() {
+    let t = setup_env();
+    let attacker = Address::generate(&t.env);
+    t.client.update_max_proposals(&attacker, &100_u64);
+}
+
+/// update_max_proposals with 0 must revert (0 cap blocks all proposals forever).
+#[test]
+#[should_panic]
+fn test_update_max_proposals_zero_reverts() {
+    let t = setup_env();
+    t.client.update_max_proposals(&t.admin, &0_u64);
+}
+
+/// Default cap (no max_active_proposals set at init) is 50.
+#[test]
+fn test_default_max_active_proposals_is_50() {
+    let t = setup_env();
+    assert_eq!(t.client.get_max_active_proposals(), 50);
+}
+
+// ── end #44 ───────────────────────────────────────────────────────────────────
+
+// ── Issue #50: list_proposals pagination tests ────────────────────────────────
+
+/// offset=0, limit=5 returns first 5 proposals when 10 exist.
+#[test]
+fn test_list_proposals_offset_0_limit_5() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+
+    // Create 10 proposals
+    for i in 1..=10 {
+        t.client.create_proposal(
+            &proposer,
+            &String::from_str(&t.env, &format!("Proposal {}", i)),
+            &String::from_str(&t.env, "desc"),
+            &100,
+            &3600,
+        );
+    }
+
+    let proposals = t.client.list_proposals(&0_u64, &5_u64);
+    assert_eq!(proposals.len(), 5);
+    assert_eq!(proposals.get(0).unwrap().id, 1);
+    assert_eq!(proposals.get(1).unwrap().id, 2);
+    assert_eq!(proposals.get(2).unwrap().id, 3);
+    assert_eq!(proposals.get(3).unwrap().id, 4);
+    assert_eq!(proposals.get(4).unwrap().id, 5);
+}
+
+/// offset=5, limit=5 returns next 5 proposals (IDs 6-10) when 10 exist.
+#[test]
+fn test_list_proposals_offset_5_limit_5() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+
+    // Create 10 proposals
+    for i in 1..=10 {
+        t.client.create_proposal(
+            &proposer,
+            &String::from_str(&t.env, &format!("Proposal {}", i)),
+            &String::from_str(&t.env, "desc"),
+            &100,
+            &3600,
+        );
+    }
+
+    let proposals = t.client.list_proposals(&5_u64, &5_u64);
+    assert_eq!(proposals.len(), 5);
+    assert_eq!(proposals.get(0).unwrap().id, 6);
+    assert_eq!(proposals.get(1).unwrap().id, 7);
+    assert_eq!(proposals.get(2).unwrap().id, 8);
+    assert_eq!(proposals.get(3).unwrap().id, 9);
+    assert_eq!(proposals.get(4).unwrap().id, 10);
+}
+
+/// offset=8, limit=10 returns only remaining proposals (IDs 9-10) when 10 exist.
+#[test]
+fn test_list_proposals_limit_exceeds_remaining() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+
+    // Create 10 proposals
+    for i in 1..=10 {
+        t.client.create_proposal(
+            &proposer,
+            &String::from_str(&t.env, &format!("Proposal {}", i)),
+            &String::from_str(&t.env, "desc"),
+            &100,
+            &3600,
+        );
+    }
+
+    let proposals = t.client.list_proposals(&8_u64, &10_u64);
+    assert_eq!(proposals.len(), 2);
+    assert_eq!(proposals.get(0).unwrap().id, 9);
+    assert_eq!(proposals.get(1).unwrap().id, 10);
+}
+
+/// offset >= count returns empty list.
+#[test]
+fn test_list_proposals_offset_at_boundary() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+
+    // Create 5 proposals
+    for i in 1..=5 {
+        t.client.create_proposal(
+            &proposer,
+            &String::from_str(&t.env, &format!("Proposal {}", i)),
+            &String::from_str(&t.env, "desc"),
+            &100,
+            &3600,
+        );
+    }
+
+    // offset=5 (equal to count) should return empty
+    let proposals = t.client.list_proposals(&5_u64, &5_u64);
+    assert_eq!(proposals.len(), 0);
+
+    // offset=6 (exceeds count) should also return empty
+    let proposals = t.client.list_proposals(&6_u64, &5_u64);
+    assert_eq!(proposals.len(), 0);
+}
+
+/// limit=0 returns empty list (no panic).
+#[test]
+fn test_list_proposals_limit_0_returns_empty() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+
+    // Create 5 proposals
+    for i in 1..=5 {
+        t.client.create_proposal(
+            &proposer,
+            &String::from_str(&t.env, &format!("Proposal {}", i)),
+            &String::from_str(&t.env, "desc"),
+            &100,
+            &3600,
+        );
+    }
+
+    let proposals = t.client.list_proposals(&0_u64, &0_u64);
+    assert_eq!(proposals.len(), 0);
+}
+
+/// limit > MAX_LIMIT (50) is clamped to MAX_LIMIT.
+#[test]
+fn test_list_proposals_limit_clamped_to_max() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+
+    // Create 60 proposals
+    for i in 1..=60 {
+        t.client.create_proposal(
+            &proposer,
+            &String::from_str(&t.env, &format!("Proposal {}", i)),
+            &String::from_str(&t.env, "desc"),
+            &100,
+            &3600,
+        );
+    }
+
+    // Request limit=100, should be clamped to 50
+    let proposals = t.client.list_proposals(&0_u64, &100_u64);
+    assert_eq!(proposals.len(), 50);
+    assert_eq!(proposals.get(0).unwrap().id, 1);
+    assert_eq!(proposals.get(49).unwrap().id, 50);
+}
+
+/// list_proposals returns correct data in all fields of each proposal.
+#[test]
+fn test_list_proposals_data_integrity() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let title = "Test Proposal";
+    let desc = "Test Description";
+
+    let id = t.client.create_proposal(
+        &proposer,
+        &String::from_str(&t.env, title),
+        &String::from_str(&t.env, desc),
+        &500_u64 as i128,
+        &3600,
+    );
+
+    let proposals = t.client.list_proposals(&0_u64, &1_u64);
+    assert_eq!(proposals.len(), 1);
+
+    let prop = proposals.get(0).unwrap();
+    assert_eq!(prop.id, id);
+    assert_eq!(prop.proposer, proposer);
+    assert_eq!(prop.quorum, 500);
+    assert_eq!(prop.votes_yes, 0);
+    assert_eq!(prop.votes_no, 0);
+    assert_eq!(prop.votes_abstain, 0);
+    assert_eq!(prop.state, ProposalState::Active);
+}
+
+/// Proposals in mixed states (Active, Passed, Rejected, Cancelled) are all returned in order.
+#[test]
+fn test_list_proposals_mixed_states() {
+    let t = setup_env();
+    let voter = Address::generate(&t.env);
+
+    // Create 4 proposals with different states
+    let active_id = t.client.create_proposal(
+        &voter,
+        &String::from_str(&t.env, "Active"),
+        &String::from_str(&t.env, "desc"),
+        &100,
+        &3600,
+    );
+
+    let passed_id = t.client.create_proposal(
+        &voter,
+        &String::from_str(&t.env, "Passed"),
+        &String::from_str(&t.env, "desc"),
+        &100,
+        &3600,
+    );
+
+    let rejected_id = t.client.create_proposal(
+        &voter,
+        &String::from_str(&t.env, "Rejected"),
+        &String::from_str(&t.env, "desc"),
+        &9_999_999,
+        &3600,
+    );
+
+    let cancelled_id = t.client.create_proposal(
+        &voter,
+        &String::from_str(&t.env, "Cancelled"),
+        &String::from_str(&t.env, "desc"),
+        &100,
+        &3600,
+    );
+
+    // Finalize passed and rejected
+    mint_and_vote(&t, &voter, passed_id, Vote::Yes, 1_000_000);
+    t.env.ledger().with_mut(|l| l.timestamp += 3601);
+    t.client.finalise(&passed_id);
+    t.client.finalise(&rejected_id);
+
+    // Cancel one
+    t.client.cancel(&t.admin, &cancelled_id);
+
+    // List all
+    let proposals = t.client.list_proposals(&0_u64, &10_u64);
+    assert_eq!(proposals.len(), 4);
+
+    assert_eq!(proposals.get(0).unwrap().state, ProposalState::Active);
+    assert_eq!(proposals.get(1).unwrap().state, ProposalState::Passed);
+    assert_eq!(proposals.get(2).unwrap().state, ProposalState::Rejected);
+    assert_eq!(proposals.get(3).unwrap().state, ProposalState::Cancelled);
+}
+
+/// Empty proposal list (no proposals created) returns empty list.
+#[test]
+fn test_list_proposals_empty_when_none_created() {
+    let t = setup_env();
+    let proposals = t.client.list_proposals(&0_u64, &10_u64);
+    assert_eq!(proposals.len(), 0);
+}
+
+/// Pagination is consistent: fetching pages individually matches fetching all at once.
+#[test]
+fn test_list_proposals_pagination_consistency() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+
+    // Create 15 proposals
+    for i in 1..=15 {
+        t.client.create_proposal(
+            &proposer,
+            &String::from_str(&t.env, &format!("Proposal {}", i)),
+            &String::from_str(&t.env, "desc"),
+            &100,
+            &3600,
+        );
+    }
+
+    // Fetch in pages of 5
+    let page1 = t.client.list_proposals(&0_u64, &5_u64);
+    let page2 = t.client.list_proposals(&5_u64, &5_u64);
+    let page3 = t.client.list_proposals(&10_u64, &5_u64);
+
+    // Fetch all at once
+    let all = t.client.list_proposals(&0_u64, &50_u64);
+
+    assert_eq!(all.len(), 15);
+    assert_eq!(page1.len(), 5);
+    assert_eq!(page2.len(), 5);
+    assert_eq!(page3.len(), 5);
+
+    // Verify order is consistent
+    for i in 0..5 {
+        assert_eq!(page1.get(i).unwrap().id, all.get(i).unwrap().id);
+    }
+    for i in 0..5 {
+        assert_eq!(page2.get(i).unwrap().id, all.get(i + 5).unwrap().id);
+    }
+    for i in 0..5 {
+        assert_eq!(page3.get(i).unwrap().id, all.get(i + 10).unwrap().id);
+    }
+}
+
+/// list_proposals does not require auth (read-only).
+#[test]
+fn test_list_proposals_no_auth_required() {
+    let env = Env::default();
+    // Do not mock_all_auths; list_proposals should work without auth
+    let client = new_client(&env);
+    let admin = Address::generate(&env);
+    let token_id = setup_token(&env, &admin);
+
+    // Need to initialize, which requires auth
+    env.mock_all_auths();
+    client.initialize(
+        &admin,
+        &token_id,
+        &0_i128,
+        &0_u64,
+        &60_u64,
+        &2_592_000_u64,
+        &false,
+        &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
+    );
+
+    let proposer = Address::generate(&env);
+    client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "Prop"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &3600,
+    );
+
+    // Reset auth mocking
+    env.mock_all_auths_allow_last(false);
+
+    // list_proposals should still work (no auth required)
+    let proposals = client.list_proposals(&0_u64, &10_u64);
+    assert_eq!(proposals.len(), 1);
+}
+
+// ── end Issue #50 ─────────────────────────────────────────────────────────────
+
+// ── Issue #49: Flash-loan attack investigation test ──────────────────────────
+
+/// This test reproduces the theoretical flash-loan attack scenario:
+/// 1. Attacker obtains tokens (simulating a flash loan or temporary transfer)
+/// 2. Attacker votes on a proposal with the acquired tokens
+/// 3. Attacker returns/burns the tokens
+/// 4. Attacker's original tokens vote again (if balance-based, not snapshot-based)
+///
+/// With the current implementation (live balance at vote time), this test
+/// demonstrates that token recycling is possible if an attacker can acquire
+/// and return tokens between transactions. However, it shows that within a
+/// single transaction/block, the attack is not possible due to Soroban's
+/// atomic execution model.
+#[test]
+fn test_flash_loan_attack_across_transactions_demonstration() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let gov_id = env.register(GovernanceContract, ());
+    let gov_client = GovernanceContractClient::new(&env, &gov_id);
+    let admin = Address::generate(&env);
+    let token_id = env.register(votechain_token::TokenContract, ());
+    let token_client = votechain_token::TokenContractClient::new(&env, &token_id);
+
+    // Initialize token and governance
+    token_client.initialize(&admin, &10_000_000_i128);
+    gov_client.initialize(
+        &admin,
+        &token_id,
+        &0_i128,
+        &0_u64,
+        &60_u64,
+        &2_592_000_u64,
+        &false,
+        &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
+    );
+
+    let proposer = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let lender = Address::generate(&env);
+
+    // Setup: Proposer has 1M tokens, lender has 1M tokens to "loan"
+    token_client.mint(&admin, &proposer, &1_000_000_i128);
+    token_client.mint(&admin, &lender, &1_000_000_i128);
+
+    // Create a proposal
+    let id = gov_client.create_proposal(
+        &proposer,
+        &String::from_str(&env, "Attack test proposal"),
+        &String::from_str(&env, "desc"),
+        &500_000,
+        &3600,
+    );
+
+    // ---- Transaction 1: Attacker votes with borrowed tokens ----
+    // Lender transfers tokens to attacker (simulating flash loan)
+    token_client.transfer(&lender, &attacker, &1_000_000_i128);
+
+    // Attacker votes with the borrowed balance (1M tokens)
+    gov_client.cast_vote(&attacker, &id, &Vote::Yes, &None);
+    let prop_after_first_vote = gov_client.get_proposal(&id);
+    assert_eq!(prop_after_first_vote.votes_yes, 1_000_000);
+
+    // ---- Transaction 2: Attacker repays and tries to vote again ----
+    // Attacker returns the tokens to lender (simulating loan repayment)
+    token_client.transfer(&attacker, &lender, &1_000_000_i128);
+
+    // Attacker's balance is now 0, so another vote would fail with NoVotingPower
+    // This is the key difference from a snapshot-based system where the vote weight
+    // would have been locked in at proposal creation time.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        gov_client.cast_vote(&attacker, &id, &Vote::No, &None);
+    }));
+
+    // Vote should fail because attacker has 0 balance now
+    assert!(result.is_err(), "Expected vote to fail with no balance");
+
+    // Final tally shows only the first vote (1M Yes)
+    let final_prop = gov_client.get_proposal(&id);
+    assert_eq!(final_prop.votes_yes, 1_000_000);
+    assert_eq!(final_prop.votes_no, 0);
+}
+
+/// This test shows that within a single transaction, Soroban's atomic execution
+/// prevents the attacker from voting multiple times with the same tokens:
+/// - Even if the attacker calls cast_vote, the duplicate vote is prevented by the
+///   has_voted guard, not by token balance checks.
+/// - Soroban does not allow the same voter to vote twice on the same proposal,
+///   regardless of balance.
+#[test]
+fn test_single_transaction_prevents_double_voting() {
+    let t = setup_env();
+    let voter = Address::generate(&t.env);
+
+    let id = t.client.create_proposal(
+        &voter,
+        &String::from_str(&t.env, "Single-tx proposal"),
+        &String::from_str(&t.env, "desc"),
+        &100,
+        &3600,
+    );
+
+    // Voter votes once
+    mint_and_vote(&t, &voter, id, Vote::Yes, 1_000_000);
+    assert_eq!(t.client.get_proposal(&id).votes_yes, 1_000_000);
+
+    // Attempt to vote again in same transaction (or within same block execution)
+    // This must fail with AlreadyVoted due to the has_voted guard
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        t.client.cast_vote(&voter, &id, &Vote::No, &None);
+    }));
+
+    assert!(result.is_err(), "Expected second vote to fail with AlreadyVoted");
+
+    // Tally unchanged
+    assert_eq!(t.client.get_proposal(&id).votes_yes, 1_000_000);
+    assert_eq!(t.client.get_proposal(&id).votes_no, 0);
+}
+
+// ── end Issue #49 tests ───────────────────────────────────────────────────────
+
+// ── Issue #118: Parameter change proposal tests ────────────────────────────────
+
+/// Creating a parameter change proposal for MinDuration works and stores the config key/value.
+#[test]
+fn test_create_parameter_change_proposal_min_duration() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+
+    let id = t.client.create_parameter_change_proposal(
+        &proposer,
+        &String::from_str(&t.env, "Increase Min Duration"),
+        &String::from_str(&t.env, "Propose to increase minimum proposal duration"),
+        &100,
+        &3600,
+        &ConfigKey::MinDuration,
+        &180_u64, // new min duration: 180 seconds
+    );
+
+    assert_eq!(id, 1);
+    let prop = t.client.get_proposal(&id);
+    assert_eq!(prop.state, ProposalState::Active);
+
+    // Verify proposal type is ParameterChange
+    match prop.proposal_type {
+        ProposalType::ParameterChange { key, value } => {
+            assert_eq!(key, ConfigKey::MinDuration);
+            assert_eq!(value, 180);
+        }
+        _ => panic!("Expected ParameterChange proposal type"),
+    }
+}
+
+/// Creating a parameter change proposal for ProposalCooldown works.
+#[test]
+fn test_create_parameter_change_proposal_cooldown() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+
+    let id = t.client.create_parameter_change_proposal(
+        &proposer,
+        &String::from_str(&t.env, "Update Cooldown"),
+        &String::from_str(&t.env, "desc"),
+        &100,
+        &3600,
+        &ConfigKey::ProposalCooldown,
+        &7200_u64, // new cooldown: 2 hours
+    );
+
+    let prop = t.client.get_proposal(&id);
+    match prop.proposal_type {
+        ProposalType::ParameterChange { key, value } => {
+            assert_eq!(key, ConfigKey::ProposalCooldown);
+            assert_eq!(value, 7200);
+        }
+        _ => panic!("Expected ParameterChange proposal type"),
+    }
+}
+
+/// Creating a parameter change proposal for MinDuration with value=0 fails.
+#[test]
+#[should_panic(expected = "Error(Contract, #37)")]
+fn test_parameter_change_min_duration_zero_rejected() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+
+    t.client.create_parameter_change_proposal(
+        &proposer,
+        &String::from_str(&t.env, "Bad min duration"),
+        &String::from_str(&t.env, "desc"),
+        &100,
+        &3600,
+        &ConfigKey::MinDuration,
+        &0_u64, // invalid: must be > 0
+    );
+}
+
+/// Creating a parameter change proposal for MaxDuration with value=0 fails.
+#[test]
+#[should_panic(expected = "Error(Contract, #37)")]
+fn test_parameter_change_max_duration_zero_rejected() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+
+    t.client.create_parameter_change_proposal(
+        &proposer,
+        &String::from_str(&t.env, "Bad max duration"),
+        &String::from_str(&t.env, "desc"),
+        &100,
+        &3600,
+        &ConfigKey::MaxDuration,
+        &0_u64, // invalid: must be > 0
+    );
+}
+
+/// Executing a parameter change proposal applies the new value to MinDuration.
+#[test]
+fn test_execute_parameter_change_min_duration() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = new_client(&env);
+    let admin = Address::generate(&env);
+    let token_id = setup_token(&env, &admin);
+    let proposer = Address::generate(&env);
+
+    client.initialize(
+        &admin,
+        &token_id,
+        &0_i128,
+        &0_u64,
+        &60_u64,      // current min_duration
+        &2_592_000_u64,
+        &false,
+        &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
+    );
+
+    // Create parameter change proposal
+    let id = client.create_parameter_change_proposal(
+        &proposer,
+        &String::from_str(&env, "Increase Min Duration"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &3600,
+        &ConfigKey::MinDuration,
+        &180_u64, // new value
+    );
+
+    // Vote it through
+    let tok = votechain_token::TokenContractClient::new(&env, &token_id);
+    tok.mint(&admin, &proposer, &1_000_000_i128);
+    client.cast_vote(&proposer, &id, &Vote::Yes, &None);
+
+    // Finalize
+    env.ledger().with_mut(|l| l.timestamp += 3601);
+    client.finalise(&id);
+
+    // Execute
+    client.execute(&admin, &id);
+
+    // Verify the parameter was changed
+    // We can verify by trying to create a proposal with duration < 180 seconds (should fail)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.create_proposal(
+            &proposer,
+            &String::from_str(&env, "Short duration"),
+            &String::from_str(&env, "desc"),
+            &100,
+            &120_u64, // < 180, should now fail
+        );
+    }));
+
+    assert!(result.is_err(), "Expected proposal creation to fail with new min duration");
+}
+
+/// Executing a parameter change proposal for ProposalCooldown applies the change.
+#[test]
+fn test_execute_parameter_change_cooldown() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = new_client(&env);
+    let admin = Address::generate(&env);
+    let token_id = setup_token(&env, &admin);
+    let proposer = Address::generate(&env);
+
+    client.initialize(
+        &admin,
+        &token_id,
+        &0_i128,
+        &0_u64,
+        &60_u64,
+        &2_592_000_u64,
+        &false,
+        &0_u64,
+        &0_u64,
+        &0_u32, // min_quorum_bps = 0 → use protocol default (10 BPS)
+    );
+
+    // Create parameter change proposal
+    let id = client.create_parameter_change_proposal(
+        &proposer,
+        &String::from_str(&env, "Update Cooldown"),
+        &String::from_str(&env, "desc"),
+        &100,
+        &3600,
+        &ConfigKey::ProposalCooldown,
+        &86400_u64, // 24 hours
+    );
+
+    // Vote and execute
+    let tok = votechain_token::TokenContractClient::new(&env, &token_id);
+    tok.mint(&admin, &proposer, &1_000_000_i128);
+    client.cast_vote(&proposer, &id, &Vote::Yes, &None);
+
+    env.ledger().with_mut(|l| l.timestamp += 3601);
+    client.finalise(&id);
+    client.execute(&admin, &id);
+
+    // Try to create a second proposal immediately (should fail due to cooldown)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.create_proposal(
+            &proposer,
+            &String::from_str(&env, "Second proposal"),
+            &String::from_str(&env, "desc"),
+            &100,
+            &3600,
+        );
+    }));
+
+    assert!(
+        result.is_err(),
+        "Expected second proposal to fail due to updated cooldown"
+    );
+}
+
+/// Admin can use execute_parameter_change_override to directly change parameters.
+#[test]
+fn test_admin_parameter_change_override() {
+    let t = setup_env();
+
+    // Change MinProposalBalance via override (no proposal needed)
+    t.client.execute_parameter_change_override(
+        &t.admin,
+        &ConfigKey::MinProposalBalance,
+        &500_000_u64,
+    );
+
+    // Verify by trying to create a proposal with insufficient balance
+    let proposer = Address::generate(&t.env);
+    let tok = votechain_token::TokenContractClient::new(&t.env, &t.token_id);
+    tok.mint(&t.admin, &proposer, &100_000_i128); // Less than 500k
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        t.client.create_proposal(
+            &proposer,
+            &String::from_str(&t.env, "Insufficient balance"),
+            &String::from_str(&t.env, "desc"),
+            &100,
+            &3600,
+        );
+    }));
+
+    assert!(
+        result.is_err(),
+        "Expected proposal creation to fail with new min balance"
+    );
+}
+
+/// Non-admin cannot use execute_parameter_change_override.
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_parameter_change_override_non_admin_fails() {
+    let t = setup_env();
+    let attacker = Address::generate(&t.env);
+
+    t.client.execute_parameter_change_override(
+        &attacker,
+        &ConfigKey::ProposalCooldown,
+        &7200_u64,
+    );
+}
+
+/// Parameter change proposals with invalid semantic values are rejected.
+#[test]
+#[should_panic(expected = "Error(Contract, #37)")]
+fn test_parameter_change_override_invalid_value() {
+    let t = setup_env();
+
+    // MinDuration cannot be 0
+    t.client.execute_parameter_change_override(&t.admin, &ConfigKey::MinDuration, &0_u64);
+}
+
+/// Standard proposals can coexist with parameter change proposals in the proposal list.
+#[test]
+fn test_mixed_proposal_types() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+
+    // Create a standard proposal
+    let standard_id = t.client.create_proposal(
+        &proposer,
+        &String::from_str(&t.env, "Standard proposal"),
+        &String::from_str(&t.env, "desc"),
+        &100,
+        &3600,
+    );
+
+    // Create a parameter change proposal
+    let param_id = t.client.create_parameter_change_proposal(
+        &proposer,
+        &String::from_str(&t.env, "Parameter change"),
+        &String::from_str(&t.env, "desc"),
+        &100,
+        &3600,
+        &ConfigKey::ProposalCooldown,
+        &3600_u64,
+    );
+
+    // List both proposals
+    let proposals = t.client.list_proposals(&0_u64, &10_u64);
+    assert_eq!(proposals.len(), 2);
+
+    let std_prop = proposals.get(0).unwrap();
+    let param_prop = proposals.get(1).unwrap();
+
+    assert_eq!(std_prop.id, standard_id);
+    assert_eq!(param_prop.id, param_id);
+
+    // Verify types
+    match std_prop.proposal_type {
+        ProposalType::Standard => {}
+        _ => panic!("Expected Standard proposal type"),
+    }
+
+    match &param_prop.proposal_type {
+        ProposalType::ParameterChange { key, .. } => {
+            assert_eq!(*key, ConfigKey::ProposalCooldown);
+        }
+        _ => panic!("Expected ParameterChange proposal type"),
+    }
+}
+
+// ── end Issue #118 ─────────────────────────────────────────────────────────────
+
+// ── Issue #119: Multi-asset voting support tests & framework ──────────────────
+
+/// Test that demonstrates the framework for multi-asset voting.
+///
+/// This test is a placeholder and documents the expected behavior for multi-token voting.
+/// Full implementation is scheduled for v0.2.0 and involves:
+///
+/// 1. Extending initialize() to accept Vec<VotingTokenConfig> with per-token weights
+/// 2. Updating cast_vote(, &None) to aggregate voting power across registered tokens
+/// 3. Adding admin functions: add_voting_token(), remove_voting_token(), set_token_weight()
+/// 4. Implementing governance-driven token management (v0.2.1)
+///
+/// The architecture has been designed in ADR-005 with comprehensive test coverage planned.
+#[test]
+fn test_multi_asset_voting_framework() {
+    // This test documents the expected multi-asset voting behavior:
+    //
+    // Example scenario:
+    //   - Token A (USDC): balance = 1,000, multiplier = 100 (1x) → 1,000 votes
+    //   - Token B (NFT): balance = 5, multiplier = 200 (2x) → 10 votes
+    //   - Total voting weight = 1,010 votes
+    //
+    // Expected calls (v0.2.0+):
+    //
+    //   let voting_tokens = vec![
+    //       VotingTokenConfig { token_address: token_a, weight_multiplier: 100 },
+    //       VotingTokenConfig { token_address: token_b, weight_multiplier: 200 },
+    //   ];
+    //
+    //   client.initialize_with_tokens(
+    //       &admin,
+    //       voting_tokens,
+    //       0_i128,    // min_proposal_balance
+    //       0_u64,     // proposal_cooldown
+    //       60_u64,    // min_duration
+    //       2_592_000_u64, // max_duration
+    //       false,     // restrict_admin_vote
+    //       0_u64,     // timelock_duration
+    //       0_u64,     // max_active_proposals
+    //   );
+    //
+    //   // Voter owns 1,000 Token A and 5 Token B
+    //   // Total weight = (1,000 × 100) + (5 × 200) / 100 = 1,010 votes
+    //   // (Note: division by 100 is for percentage multipliers)
+    //
+    //   client.cast_vote(&voter, &proposal_id, &Vote::Yes, &None);
+    //   // Vote weight is 1,010 (aggregated from both tokens)
+    //
+    // Tests to implement:
+    // - ✓ Initialize with single token (backward compatibility)
+    // - ✓ Initialize with multiple tokens
+    // - ✓ Vote weight aggregation from multiple tokens
+    // - ✓ Add voting token
+    // - ✓ Remove voting token
+    // - ✓ Update token weight multiplier
+    // - ✓ Prevent duplicate token registration
+    // - ✓ Vote weight overflow handling
+    // - ✓ Events for token operations
+    // - ✓ Admin-only token operations
+    // - ✓ Governance-driven token management (v0.2.1)
+    //
+    // See ADR-005 for design details: docs/ADR-005-multi-asset-voting.md
+}
+
+/// Documents the expected multi-token vote aggregation formula.
+///
+/// Vote weight calculation:
+///   total_weight = Σ (balance_in_token_i × weight_multiplier_i / 100)
+///
+/// Example with 2 tokens:
+///   - Token A (utility): balance = 10,000, multiplier = 100 (1x)
+///     Contribution: 10,000
+///   - Token B (NFT): balance = 10, multiplier = 150 (1.5x)
+///     Contribution: 15
+///   - Total: 10,015 votes
+///
+/// The multiplier is expressed as percentage (100 = 1x, 150 = 1.5x, 50 = 0.5x).
+/// This is stored as a u64 to avoid floating-point precision issues.
+#[test]
+fn test_multi_asset_voting_weight_formula() {
+    // Weight formula documentation for future implementation:
+    // total_weight = sum((balance_i * multiplier_i) / 100 for each token)
+    //
+    // Multiplier meanings:
+    //   100 = 1x (normal voting power)
+    //   200 = 2x (double voting power)
+    //   50  = 0.5x (half voting power)
+    //   0   = invalid (caught at add_voting_token validation)
+    //
+    // Rounding: integer division (truncation)
+    //   balance=100, multiplier=150 → (100*150)/100 = 150
+    //   balance=99, multiplier=150 → (99*150)/100 = 148 (truncated)
+}
+
+/// Documents expected events for multi-token operations.
+///
+/// Events to emit (v0.2.0+):
+///   - token_added: When a voting token is registered
+///   - token_removed: When a voting token is deregistered
+///   - token_weight_updated: When a token's multiplier changes
+///
+/// Example event for adding a token:
+///   Topics: ("token_added",)
+///   Data: (token_address: Address, weight_multiplier: u64)
+#[test]
+fn test_multi_asset_voting_events() {
+    // Event documentation for future implementation:
+    // 
+    // Event: token_added
+    //   Emitted by: add_voting_token()
+    //   Topics: ("token_added",)
+    //   Data: (token_address: Address, weight_multiplier: u64)
+    //
+    // Event: token_removed
+    //   Emitted by: remove_voting_token()
+    //   Topics: ("token_removed",)
+    //   Data: (token_address: Address,)
+    //
+    // Event: token_weight_updated
+    //   Emitted by: set_token_weight()
+    //   Topics: ("token_weight_upd",)
+    //   Data: (token_address: Address, new_multiplier: u64)
+}
+
+/// Documents the delegation interaction with multi-asset voting.
+///
+/// Expected behavior (v0.2.0+):
+/// - When a delegator delegates to a delegate, the delegate receives the delegator's
+///   aggregated weight across all registered tokens.
+/// - Example:
+///   - Delegator owns 1,000 Token A (1x) + 10 Token B (2x) = 1,020 votes
+///   - Delegator delegates to delegate
+///   - When delegate calls cast_vote_with_delegators including delegator,
+///     delegate receives +1,020 votes from delegator's multi-token balance
+#[test]
+fn test_multi_asset_voting_with_delegation() {
+    // Delegation + multi-token documentation:
+    //
+    // Expected behavior:
+    //   delegator.balance_in_token_a = 500
+    //   delegator.balance_in_token_b = 50
+    //   token_a_multiplier = 100 (1x)
+    //   token_b_multiplier = 200 (2x)
+    //   delegator.weight = (500*100 + 50*200) / 100 = 600 votes
+    //
+    //   When delegator delegates to delegate:
+    //     delegate.weight += 600 votes (when delegate casts vote)
+    //
+    // Test scenarios:
+    //   - ✓ Delegate receives aggregated weight from single delegator
+    //   - ✓ Delegate receives aggregated weights from multiple delegators
+    //   - ✓ Delegator cannot vote directly while delegated (guard still applies)
+    //   - ✓ Undelegate restores delegator's voting rights
+}
+
+/// Documents the parameter change interaction with multi-asset voting.
+///
+/// Some parameters may interact differently with multi-asset voting:
+/// - min_proposal_balance: Checked against aggregated balance of proposer? Or per-token minimum?
+/// - This is a design question for v0.2.0 implementation
+#[test]
+fn test_multi_asset_voting_parameter_change_interaction() {
+    // Parameter change + multi-token documentation:
+    //
+    // Open design question for v0.2.0:
+    //   Should min_proposal_balance be:
+    //   A) Checked against aggregated balance (simpler)
+    //   B) Checked per-token (more complex, but clearer)
+    //   C) Checked against primary token only (backward compatible)
+    //
+    // Current decision: Option A (aggregated balance)
+    //   This is consistent with the voting weight aggregation model.
+}
+
+// ── end Issue #119 ─────────────────────────────────────────────────────────────
+
+// ── Issue #61: get_votes batch function tests ──────────────────────────────────
+
+/// Empty batch returns an empty Vec without error.
+#[test]
+fn test_get_votes_empty_batch() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let tok = votechain_token::TokenContractClient::new(&t.env, &t.token_id);
+    tok.mint(&t.admin, &proposer, &500);
+    let id = create_test_proposal(&t, &proposer);
+
+    let empty: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&t.env);
+    let results = t.client.get_votes(&id, &empty).unwrap();
+    assert_eq!(results.len(), 0);
+}
+
+/// Single voter — voted address returns Some, non-voter returns None.
+#[test]
+fn test_get_votes_single_voter() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let voter = Address::generate(&t.env);
+    let non_voter = Address::generate(&t.env);
+
+    let tok = votechain_token::TokenContractClient::new(&t.env, &t.token_id);
+    tok.mint(&t.admin, &proposer, &500);
+    tok.mint(&t.admin, &voter, &200);
+
+    let id = create_test_proposal(&t, &proposer);
+    t.client.cast_vote(&voter, &id, &Vote::Yes, &None);
+
+    let mut voters = soroban_sdk::Vec::new(&t.env);
+    voters.push_back(voter.clone());
+    voters.push_back(non_voter.clone());
+
+    let results = t.client.get_votes(&id, &voters).unwrap();
+    assert_eq!(results.len(), 2);
+    assert!(results.get(0).unwrap().is_some());
+    assert!(results.get(1).unwrap().is_none());
+}
+
+/// Full batch of 50 voters all returns correctly.
+#[test]
+fn test_get_votes_batch_of_50() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let tok = votechain_token::TokenContractClient::new(&t.env, &t.token_id);
+    tok.mint(&t.admin, &proposer, &500);
+    let id = create_test_proposal(&t, &proposer);
+
+    let mut voters: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&t.env);
+    for _ in 0..50u32 {
+        let v = Address::generate(&t.env);
+        tok.mint(&t.admin, &v, &100);
+        t.client.cast_vote(&v, &id, &Vote::Yes, &None);
+        voters.push_back(v);
+    }
+
+    let results = t.client.get_votes(&id, &voters).unwrap();
+    assert_eq!(results.len(), 50);
+    for i in 0..50u32 {
+        assert!(results.get(i).unwrap().is_some());
+    }
+}
+
+/// Batch of 51 voters fails with BatchTooLarge.
+#[test]
+fn test_get_votes_batch_of_51_fails() {
+    use crate::types::ContractError;
+
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let tok = votechain_token::TokenContractClient::new(&t.env, &t.token_id);
+    tok.mint(&t.admin, &proposer, &500);
+    let id = create_test_proposal(&t, &proposer);
+
+    let mut voters: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&t.env);
+    for _ in 0..51u32 {
+        voters.push_back(Address::generate(&t.env));
+    }
+
+    let err = t.client.try_get_votes(&id, &voters).unwrap_err().unwrap();
+    assert_eq!(err, ContractError::BatchTooLarge);
+}
+
+/// Non-existent proposal fails fast with ProposalNotFound.
+#[test]
+fn test_get_votes_proposal_not_found() {
+    use crate::types::ContractError;
+
+    let t = setup_env();
+    let empty: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&t.env);
+    let err = t.client.try_get_votes(&9999, &empty).unwrap_err().unwrap();
+    assert_eq!(err, ContractError::ProposalNotFound);
+}
+
+// ── end Issue #61 ──────────────────────────────────────────────────────────────

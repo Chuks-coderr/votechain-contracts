@@ -85,9 +85,63 @@ pub enum ContractError {
     AdminTransferExpired = 32,
     /// 33 – Caller is not the pending admin
     NotPendingAdmin = 33,
+    /// 34 – Delegator cannot vote directly while their power is delegated
+    VotingPowerDelegated = 34,
+    /// 35 – Cannot delegate to self
+    CannotDelegateToSelf = 35,
+    /// 36 – Cannot delegate to the zero address
+    InvalidDelegateAddress = 36,
+    /// 37 – Invalid parameter change proposal (e.g., invalid ConfigKey or semantic error)
+    InvalidParameterChange = 37,
+    /// 38 – Parameter change is not supported for the given proposal type
+    ParameterChangeNotSupported = 38,
+    /// 39 – Token is already registered in multi-token voting
+    TokenAlreadyRegistered = 39,
+    /// 40 – Token is not registered in multi-token voting
+    TokenNotRegistered = 40,
+    /// 41 – Cannot remove the last voting token (DAO must have at least one)
+    CannotRemoveLastToken = 41,
+    /// 42 – Weight multiplier must be greater than zero
+    InvalidWeightMultiplier = 42,
+    /// 43 – Batch size exceeds the allowed maximum of MAX_BATCH_VOTERS (50)
+    BatchTooLarge = 43,
+    /// 44 – Global cap on simultaneously active proposals has been reached
+    TooManyActiveProposals = 44,
+    /// 45 – Admin transfer acceptance window is shorter than MIN_TRANSFER_WINDOW
+    TransferWindowTooShort = 45,
+    /// 46 – extend_voting called outside the last 24 hours of the voting period
+    ExtensionWindowNotReached = 46,
+    /// 47 – Proposal's voting period has already been extended once
+    AlreadyExtended = 47,
+    /// 48 – Optional vote comment hash exceeds the maximum allowed byte length
+    CommentHashTooLong = 48,
+    /// 49 – Delegation would create a cycle
+    CircularDelegation = 49,
+    /// 50 – Proposal template with the given ID does not exist
+    TemplateNotFound = 50,
+    /// 51 – A template with this ID has already been registered
+    TemplateAlreadyExists = 51,
+    /// 52 – Template ID is empty or exceeds the maximum allowed length
+    InvalidTemplateId = 52,
+    /// 53 – New quorum is below the configured minimum quorum floor (MIN_QUORUM_BPS)
+    QuorumBelowFloor = 53,
 }
 
-/// Lifecycle state of the governance contract itself.
+/// Different types of proposals the governance contract supports.
+/// Standard proposals affect specific proposals; parameter change proposals update contract configuration.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProposalType {
+    /// Standard governance proposal (default)
+    Standard,
+    /// Parameter change proposal that updates contract configuration when executed
+    ParameterChange {
+        key: ConfigKey,
+        /// New value as a 64-bit unsigned integer (suitable for durations, balances, etc.)
+        /// The contract enforces semantic validation based on the ConfigKey.
+        value: u64,
+    },
+}
 ///
 /// - `Uninitialized`: the contract has been deployed but `initialize` has not
 ///   yet been called. No governance operations are possible.
@@ -118,6 +172,24 @@ pub enum Vote {
     Abstain,
 }
 
+/// Configuration keys that can be changed via governance proposals.
+/// These are used in ParameterChange proposals to identify which parameter is being updated.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum ConfigKey {
+    /// Minimum token balance required to create a proposal
+    MinProposalBalance = 1,
+    /// Minimum seconds between consecutive proposals per address
+    ProposalCooldown = 2,
+    /// Mandatory delay (seconds) between proposal passing and execution
+    TimelockDuration = 3,
+    /// Minimum allowed voting duration in seconds
+    MinDuration = 4,
+    /// Maximum allowed voting duration in seconds
+    MaxDuration = 5,
+}
+
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct Proposal {
@@ -135,9 +207,106 @@ pub struct Proposal {
     /// Earliest Unix timestamp at which the proposal may be executed.
     /// Set to `end_time + timelock_duration` when the proposal passes; 0 otherwise.
     pub execute_after: u64,
+    /// Type of proposal (Standard or ParameterChange)
+    pub proposal_type: ProposalType,
+    /// Total token supply snapshot captured at proposal creation time.
+    ///
+    /// Used by `update_quorum` to bound the new quorum against the supply
+    /// that was in effect when the proposal was created, rather than the
+    /// live supply (which may have changed due to minting or burning after
+    /// the proposal was opened). This prevents a scenario where tokens are
+    /// burned after creation, making the quorum permanently unachievable.
+    pub supply_snapshot: i128,
 }
 
-/// Storage key enum for the governance contract.
+/// Pending multi-sig action types.
+///
+/// Each variant represents a privileged admin operation that requires
+/// M-of-N co-signer approval before it is executed on-chain.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum MultisigAction {
+    /// Mark a passed proposal as executed.
+    AdminExecute(u64),
+    /// Cancel an active proposal.
+    AdminCancel(u64),
+    /// Pause the contract.
+    AdminPause,
+    /// Unpause the contract.
+    AdminUnpause,
+    /// Update the quorum threshold on an active proposal.
+    AdminUpdateQuorum(u64, i128),
+    /// Transfer the admin set to a new set of addresses.
+    AdminTransfer(soroban_sdk::Vec<Address>),
+}
+
+/// Stored record of a pending multi-sig action and its current approvals.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct PendingMultisigAction {
+    /// The action to be executed once the threshold is reached.
+    pub action: MultisigAction,
+    /// Addresses that have already approved this action.
+    pub approvals: soroban_sdk::Vec<Address>,
+    /// Unix timestamp after which this action expires.
+    pub expires_at: u64,
+}
+
+/// Configuration for a voting token in multi-asset voting.
+/// Stores a token contract address and its relative weight multiplier.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct VotingTokenConfig {
+    /// Address of the token contract (e.g., USDC, governance NFT)
+    pub token_address: Address,
+    /// Weight multiplier for votes from this token (e.g., 100 = 1x, 200 = 2x)
+    /// Allows different tokens to have different voting influence
+    pub weight_multiplier: u64,
+}
+
+/// A pre-approved proposal template that standardises governance proposals.
+///
+/// Registered by the admin via [`register_template`], templates store default
+/// values and a parameter schema that can be used to create proposals with
+/// `create_proposal_from_template`.
+///
+/// # Storage
+/// Templates are stored in **persistent storage** keyed by their string ID,
+/// so they survive ledger expiry and persist until explicitly removed.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ProposalTemplate {
+    /// Unique human-readable identifier for the template (e.g. "treasury-allocation").
+    pub template_id: String,
+    /// Default proposal title (may contain placeholder markers).
+    pub title: String,
+    /// Default proposal description (may contain placeholder markers).
+    pub description: String,
+    /// Default quorum value; 0 means the caller must supply it.
+    pub quorum: i128,
+    /// Default voting duration in seconds; 0 means the caller must supply it.
+    pub duration: u64,
+    /// Address of the admin who registered the template.
+    pub registered_by: Address,
+    /// Unix timestamp at which the template was registered.
+    pub registered_at: u64,
+}
+
+/// Parameters supplied by a proposer when creating a proposal from a template.
+///
+/// Fields set to `None` fall back to the template's default value.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct TemplateProposalParams {
+    /// Overrides the template title if provided.
+    pub title: Option<String>,
+    /// Overrides the template description if provided.
+    pub description: Option<String>,
+    /// Overrides the template quorum if provided.
+    pub quorum: Option<i128>,
+    /// Overrides the template duration if provided.
+    pub duration: Option<u64>,
+}
 ///
 /// Every storage entry is keyed by a variant of this enum.  Because Soroban
 /// serialises the variant discriminant as part of the XDR key, each variant
@@ -253,6 +422,47 @@ pub enum DataKey {
 
     /// Unix timestamp after which the pending admin nomination expires (instance storage).
     AdminTransferExpiry,
+
+    /// The address to which `delegator` has delegated their voting power (persistent storage).
+    /// Key space: one entry per unique delegator address.
+    /// Cleared when the delegator calls `undelegate`.
+    ///
+    /// Design note: only one delegation per delegator is allowed (no chaining).
+    /// If a delegator wants to change their delegate they must first undelegate.
+    Delegation(Address),
+
+    /// List of registered voting tokens with per-token weight multipliers (instance storage).
+    /// Stored as Vec<VotingTokenConfig>. Used for multi-asset voting support (v0.2.0+).
+    /// Key space: singleton — only one `VotingTokens` entry exists.
+    /// For backward compatibility, single-token DAOs store a token in `VotingToken`
+    /// and may also have a corresponding entry in `VotingTokens`.
+    VotingTokens,
+
+    /// WASM hash of the contract version prior to the most recent upgrade (instance storage).
+    /// Used for rollback verification. Cleared on re-upgrade.
+    PreviousWasmHash,
+
+    /// Global cap on the number of simultaneously active proposals (instance storage).
+    /// Defaults to 50 if not set.
+    MaxActiveProposals,
+
+    /// Monotonic counter tracking the number of currently active proposals (instance storage).
+    /// Incremented on proposal creation, decremented on finalisation/cancellation.
+    ActiveProposalsCount,
+
+    /// Whether `proposal_id`'s voting period has already been extended once (persistent storage).
+    /// Key space: one entry per unique proposal ID. Absence means "not yet extended".
+    ProposalExtended(u64),
+
+    /// A registered proposal template keyed by its string ID (persistent storage).
+    /// Key space: one entry per unique template ID string.
+    /// See [`ProposalTemplate`] for the stored struct.
+    ProposalTemplate(String),
+
+    /// Minimum quorum floor in basis points (instance storage).
+    /// `0` means use the default of `MIN_QUORUM_BPS` (10 = 0.1% of supply).
+    /// Set during `initialize`; enforced by `update_quorum`.
+    MinQuorumBps,
 }
 
 #[contracttype]
@@ -260,4 +470,40 @@ pub enum DataKey {
 pub struct VoteRecord {
     pub vote_type: Vote,
     pub weight: i128,
+    /// Optional off-chain comment reference (e.g. an IPFS CID) explaining the
+    /// voter's rationale. Not validated on-chain — see issue #103. `None` when
+    /// the voter did not attach a comment, or when voting via
+    /// `cast_vote_with_delegators` (which does not accept a comment).
+    pub comment_hash: Option<String>,
+}
+
+/// Snapshot of all governance contract configuration values.
+///
+/// Returned by [`GovernanceContract::get_config`]. Bundles every config field
+/// so off-chain tooling can fetch everything with a single RPC call.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ContractConfig {
+    /// Current admin address.
+    pub admin: Address,
+    /// Address of the governance token contract.
+    pub voting_token: Address,
+    /// Minimum token balance required to create a proposal (0 = no minimum).
+    pub min_proposal_balance: i128,
+    /// Seconds a proposer must wait between consecutive proposals (0 = no cooldown).
+    pub proposal_cooldown: u64,
+    /// Whether the admin is restricted from voting on proposals they created.
+    pub restrict_admin_vote: bool,
+    /// Whether the contract is currently paused.
+    pub paused: bool,
+    /// Mandatory delay (seconds) between a proposal passing and execution (0 = no delay).
+    pub timelock_duration: u64,
+    /// Minimum allowed voting duration in seconds.
+    pub min_duration: u64,
+    /// Maximum allowed voting duration in seconds.
+    pub max_duration: u64,
+    /// Contract semantic version as `(major, minor, patch)`.
+    pub version: (u32, u32, u32),
+    /// Minimum quorum floor in basis points (e.g. 10 = 0.1 % of total supply).
+    pub min_quorum_bps: u32,
 }

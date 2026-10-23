@@ -10,7 +10,7 @@ This guide walks you through deploying the VoteChain governance and token contra
 |------|---------|---------|
 | Rust | 1.75+ | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
 | wasm32 target | — | `rustup target add wasm32-unknown-unknown` |
-| Stellar CLI | latest | `cargo install --locked stellar-cli --features opt` |
+| Stellar CLI | **22.8.2** | `cargo install --locked stellar-cli@22.8.2 --features opt` |
 
 Verify:
 
@@ -18,6 +18,61 @@ Verify:
 rustc --version
 stellar --version
 ```
+
+---
+
+## Quick Start (copy-paste, targets Stellar CLI 22.8.2)
+
+Set these once; every later command uses them:
+
+```bash
+export NETWORK=testnet
+export SOURCE=deployer
+export ADMIN=$(stellar keys address "$SOURCE")   # after step 1 below
+```
+
+```bash
+# 1. Create + fund an account with Friendbot
+stellar keys generate --global "$SOURCE" --network "$NETWORK" --fund
+export ADMIN=$(stellar keys address "$SOURCE")
+
+# 2 + 3. Build and deploy token + governance (writes .env.testnet)
+NETWORK=$NETWORK ./scripts/deploy.sh
+set -a; source ".env.$NETWORK"; set +a    # exports TOKEN_CONTRACT_ID, GOVERNANCE_CONTRACT_ID
+
+# 4. Initialize the token
+stellar contract invoke --id "$TOKEN_CONTRACT_ID" --source "$SOURCE" --network "$NETWORK"   -- initialize --admin "$ADMIN" --initial_supply 1000000000
+
+# 5. Initialize governance
+stellar contract invoke --id "$GOVERNANCE_CONTRACT_ID" --source "$SOURCE" --network "$NETWORK"   -- initialize --admin "$ADMIN" --voting_token "$TOKEN_CONTRACT_ID"   --min_proposal_balance 0 --proposal_cooldown 0 --min_duration 60 --max_duration 1209600   --restrict_admin_vote false --timelock_duration 0 --max_active_proposals 10
+
+# 6. Smoke test: create a proposal, vote, read it back
+PID=$(stellar contract invoke --id "$GOVERNANCE_CONTRACT_ID" --source "$SOURCE" --network "$NETWORK"   -- create_proposal --proposer "$ADMIN" --title "Smoke test" --description "Deployment check"   --quorum 1 --duration 3600)
+stellar contract invoke --id "$GOVERNANCE_CONTRACT_ID" --source "$SOURCE" --network "$NETWORK"   -- cast_vote --voter "$ADMIN" --proposal_id "$PID" --vote Yes
+stellar contract invoke --id "$GOVERNANCE_CONTRACT_ID" --network "$NETWORK" -- get_proposal --proposal_id "$PID"
+stellar contract invoke --id "$GOVERNANCE_CONTRACT_ID" --network "$NETWORK" -- get_state
+```
+
+> `scripts/deploy.sh` reads the RPC URL and passphrase from `config/testnet.toml`. If your CLI has no default source identity, set `export STELLAR_ACCOUNT=$SOURCE` before running it.
+
+### Expected terminal output
+
+```text
+$ NETWORK=testnet ./scripts/deploy.sh
+Deploying to: testnet  (RPC: https://soroban-testnet.stellar.org)
+...
+Contract IDs saved to .env.testnet
+  TOKEN_CONTRACT_ID=CB...TOKEN
+  GOVERNANCE_CONTRACT_ID=CC...GOV
+
+$ stellar contract invoke ... -- create_proposal ...
+1
+
+$ stellar contract invoke ... -- get_state
+"Ready"
+```
+
+(Contract IDs are abbreviated; yours will differ.) The step-by-step sections below explain each command in detail.
 
 ---
 
@@ -296,6 +351,27 @@ Your account needs XLM. Re-run Friendbot:
 ```bash
 curl "https://friendbot.stellar.org?addr=$(stellar keys address deployer)"
 ```
+
+### Insufficient XLM / `tx_insufficient_balance` / account not found
+
+The source account is unfunded or ran out of testnet XLM (deploys cost more than invokes). Re-fund it:
+
+```bash
+stellar keys fund "$SOURCE" --network testnet
+```
+
+Friendbot is rate-limited; if it returns an error, wait a minute and retry.
+
+### CLI version mismatch
+
+Symptoms: `error: unexpected argument`, `unrecognized subcommand`, or XDR decode errors (`xdr value invalid`). Check and pin the version:
+
+```bash
+stellar --version            # expect stellar 22.8.2
+cargo install --locked stellar-cli@22.8.2 --features opt --force
+```
+
+Older `soroban` CLI binaries use different flags — uninstall them or make sure `stellar` is first on your `PATH`.
 
 ### `AlreadyInitialized` error
 

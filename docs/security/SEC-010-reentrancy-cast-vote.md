@@ -1,9 +1,15 @@
 # SEC-010: Reentrancy Analysis — cross-contract call in `cast_vote`
 
-**Issue:** #88 SEC-003  
-**Status:** Closed — No exploitable reentrancy path found  
-**Reviewed:** 2026-04-28  
-**Scope:** `contracts/governance/src/lib.rs` — `GovernanceContract::cast_vote`
+| Field | Value |
+|---|---|
+| Record type | Security analysis |
+| Date | 2026-04-28 |
+| Status | Closed; no exploitable reentrancy path found |
+| Severity | Informational; no vulnerability confirmed |
+| Affected components | `contracts/governance/src/lib.rs` — `GovernanceContract::cast_vote` |
+| Reporter / reviewer | Not recorded |
+
+Related issue: #88 (SEC-003). Format: [SEC template](SEC-TEMPLATE.md).
 
 ---
 

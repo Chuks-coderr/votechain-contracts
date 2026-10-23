@@ -1,0 +1,14 @@
+{
+  "name": "votechain-widget",
+  "version": "0.1.0",
+  "description": "Embeddable read-only governance widget for VoteChain DAOs",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "5.4.5",
+    "vite": "5.4.21"
+  }
+}
