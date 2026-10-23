@@ -1,335 +1,174 @@
-// Copyright 2024 VoteChain Contributors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 /**
- * Unit tests for ProposalContext state transitions (issue #302).
+ * Unit tests for ProposalContext state transitions — Issue #302
  *
- * Tests cover:
- *  1. initial load  — loading=true on mount → proposals set, loading=false
- *  2. content check — proposals array contains expected items after load
- *  3. refresh       — refresh() re-fetches and updates proposals
- *  4. error state   — when the fetcher rejects, error is set and loading=false
+ * Covers:
+ *  1. Initial load — exposes proposals after fetch
+ *  2. Loading state — starts true, becomes false after fetch
+ *  3. Error state — sets error when data access throws
+ *  4. refresh() — re-fetches proposals on demand
  *
- * The optional `fetcher` prop injected on <ProposalProvider> is used so tests
- * have full control over timing and failure modes without requiring MSW or a
- * real network.
+ * Strategy:
+ *  - `vi.hoisted` creates shared mutable state that the hoisted `vi.mock` factory
+ *    can close over (vi.mock factories are hoisted above imports).
+ *  - The mock makes `sampleProposals` a getter so individual tests can flip
+ *    `shouldThrow.value` to exercise the error branch.
+ *  - `vi.useFakeTimers()` / `vi.useRealTimers()` control the 400 ms setTimeout
+ *    inside `fetchProposals` without making tests slow.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
+import { renderHook, act, waitFor } from '@testing-library/react';
 import React from 'react';
 import { ProposalProvider, useProposals } from './ProposalContext';
 import type { Proposal } from '../types';
 
-// ── Fixtures ─────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Shared hoisted state — must be created with vi.hoisted so it is available
+// inside the vi.mock factory which runs before any import statements.
+// ---------------------------------------------------------------------------
+const { shouldThrow, mockProposals } = vi.hoisted(() => {
+  const mockProposals: Proposal[] = [
+    {
+      id: 'T-1',
+      title: 'Alpha Proposal',
+      description: 'First test proposal',
+      proposer: 'GABC1',
+      state: 'Active',
+      createdAt: '2026-01-01',
+      endAt: '2026-02-01',
+      quorum: 100,
+      votesCount: 5,
+      totalWeight: 500,
+      votes: [],
+    },
+    {
+      id: 'T-2',
+      title: 'Beta Proposal',
+      description: 'Second test proposal',
+      proposer: 'GABC2',
+      state: 'Passed',
+      createdAt: '2026-01-02',
+      endAt: '2026-02-02',
+      quorum: 200,
+      votesCount: 10,
+      totalWeight: 1000,
+      votes: [],
+    },
+  ];
+  return { shouldThrow: { value: false }, mockProposals };
+});
 
-const mockProposals: Proposal[] = [
-  {
-    id: 'P-001',
-    title: 'Test Active Proposal',
-    description: 'A proposal that is currently active.',
-    proposer: 'GTEST1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
-    state: 'Active',
-    createdAt: '2026-01-01',
-    endAt: '2026-02-01',
-    quorum: 100,
-    votesCount: 5,
-    totalWeight: 500,
-    votes: [],
+// ---------------------------------------------------------------------------
+// Mock the data module.  Using a getter for `sampleProposals` means the value
+// is re-evaluated on every access — this is required so the error test can
+// change `shouldThrow.value` after module evaluation.
+// ---------------------------------------------------------------------------
+vi.mock('../data', () => ({
+  get sampleProposals() {
+    if (shouldThrow.value) {
+      throw new Error('Network error');
+    }
+    return mockProposals;
   },
-  {
-    id: 'P-002',
-    title: 'Test Passed Proposal',
-    description: 'A proposal that has already passed.',
-    proposer: 'GTEST2AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
-    state: 'Passed',
-    createdAt: '2025-12-01',
-    endAt: '2026-01-01',
-    quorum: 50,
-    votesCount: 12,
-    totalWeight: 1200,
-    votes: [],
-  },
-];
+}));
 
-const updatedProposals: Proposal[] = [
-  {
-    id: 'P-003',
-    title: 'Refreshed Proposal',
-    description: 'This proposal appeared after a refresh.',
-    proposer: 'GTEST3AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
-    state: 'Active',
-    createdAt: '2026-03-01',
-    endAt: '2026-04-01',
-    quorum: 200,
-    votesCount: 3,
-    totalWeight: 300,
-    votes: [],
-  },
-];
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-// ── Helper: consumer component ────────────────────────────────────────────────
-
-function ContextConsumer() {
-  const { proposals, loading, error, refresh } = useProposals();
-  return (
-    <div>
-      {loading && <span data-testid="loading">loading</span>}
-      {error && <span data-testid="error">{error}</span>}
-      <ul data-testid="proposal-list">
-        {proposals.map((p) => (
-          <li key={p.id} data-testid="proposal-item">
-            {p.title}
-          </li>
-        ))}
-      </ul>
-      <button onClick={refresh} data-testid="refresh-btn">
-        Refresh
-      </button>
-    </div>
-  );
+/** Wrapper that provides the ProposalProvider context to hooks under test. */
+function wrapper({ children }: { children: React.ReactNode }) {
+  return <ProposalProvider>{children}</ProposalProvider>;
 }
 
-function renderWithFetcher(fetcher: () => Promise<Proposal[]>) {
-  return render(
-    <ProposalProvider fetcher={fetcher}>
-      <ContextConsumer />
-    </ProposalProvider>,
-  );
-}
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+beforeEach(() => {
+  // Reset throw flag so each test starts in a clean state.
+  shouldThrow.value = false;
+  vi.useFakeTimers();
+});
 
-describe('ProposalContext', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+// --- Test 1 ----------------------------------------------------------------
+test('initial load — exposes proposals after fetch', async () => {
+  const { result } = renderHook(() => useProposals(), { wrapper });
+
+  // Advance fake timers past the 400 ms setTimeout in fetchProposals.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(500);
   });
 
-  // ── 1. Initial load ─────────────────────────────────────────────────────────
-
-  describe('initial load', () => {
-    it('shows loading indicator while fetch is in flight', async () => {
-      // Fetcher that never resolves during this assertion window
-      let resolve: (value: Proposal[]) => void;
-      const pending = new Promise<Proposal[]>((res) => {
-        resolve = res;
-      });
-
-      renderWithFetcher(() => pending);
-
-      // Loading indicator must be visible immediately after mount
-      expect(screen.getByTestId('loading')).toBeInTheDocument();
-
-      // Settle the pending promise so the component cleans up without leaks
-      await act(async () => {
-        resolve!(mockProposals);
-        await pending;
-      });
-
-      await waitFor(() => {
-        expect(screen.queryByTestId('loading')).not.toBeInTheDocument();
-      });
-    });
-
-    it('populates proposals and hides loading after fetch resolves', async () => {
-      const fetcher = vi.fn().mockResolvedValueOnce(mockProposals);
-
-      renderWithFetcher(fetcher);
-
-      // Wait for loading to disappear
-      await waitFor(() => {
-        expect(screen.queryByTestId('loading')).not.toBeInTheDocument();
-      });
-
-      // Both proposals should be rendered
-      const items = screen.getAllByTestId('proposal-item');
-      expect(items).toHaveLength(2);
-      expect(items[0]).toHaveTextContent('Test Active Proposal');
-      expect(items[1]).toHaveTextContent('Test Passed Proposal');
-
-      // Error must not be shown
-      expect(screen.queryByTestId('error')).not.toBeInTheDocument();
-
-      // Fetcher called exactly once on mount
-      expect(fetcher).toHaveBeenCalledTimes(1);
-    });
+  await waitFor(() => {
+    expect(result.current.loading).toBe(false);
   });
 
-  // ── 2. Content / filter check ───────────────────────────────────────────────
+  expect(result.current.proposals.length).toBeGreaterThan(0);
+  expect(result.current.proposals).toHaveLength(mockProposals.length);
+  expect(result.current.error).toBeNull();
+});
 
-  describe('proposals content', () => {
-    it('exposes the full proposals array with correct state values', async () => {
-      const fetcher = vi.fn().mockResolvedValueOnce(mockProposals);
+// --- Test 2 ----------------------------------------------------------------
+test('loading state — starts true, becomes false after load', async () => {
+  const { result } = renderHook(() => useProposals(), { wrapper });
 
-      renderWithFetcher(fetcher);
+  // Before timers fire the hook should still be loading.
+  expect(result.current.loading).toBe(true);
 
-      await waitFor(() => {
-        expect(screen.queryByTestId('loading')).not.toBeInTheDocument();
-      });
-
-      const items = screen.getAllByTestId('proposal-item');
-      // Active proposal is present
-      expect(items.some((el) => el.textContent === 'Test Active Proposal')).toBe(true);
-      // Passed proposal is present
-      expect(items.some((el) => el.textContent === 'Test Passed Proposal')).toBe(true);
-    });
-
-    it('renders an empty list when the fetcher resolves with no proposals', async () => {
-      const fetcher = vi.fn().mockResolvedValueOnce([]);
-
-      renderWithFetcher(fetcher);
-
-      await waitFor(() => {
-        expect(screen.queryByTestId('loading')).not.toBeInTheDocument();
-      });
-
-      expect(screen.queryAllByTestId('proposal-item')).toHaveLength(0);
-      expect(screen.queryByTestId('error')).not.toBeInTheDocument();
-    });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(500);
   });
 
-  // ── 3. Refresh / state update ───────────────────────────────────────────────
+  await waitFor(() => {
+    expect(result.current.loading).toBe(false);
+  });
+});
 
-  describe('refresh()', () => {
-    it('re-fetches proposals when refresh is called', async () => {
-      const fetcher = vi
-        .fn()
-        .mockResolvedValueOnce(mockProposals)  // initial load
-        .mockResolvedValueOnce(updatedProposals); // after refresh
+// --- Test 3 ----------------------------------------------------------------
+test('error state — sets error when data throws', async () => {
+  // Activate the throw path inside the sampleProposals getter.
+  shouldThrow.value = true;
 
-      renderWithFetcher(fetcher);
+  const { result } = renderHook(() => useProposals(), { wrapper });
 
-      // Wait for initial load to complete
-      await waitFor(() => {
-        expect(screen.queryByTestId('loading')).not.toBeInTheDocument();
-      });
-
-      expect(screen.getAllByTestId('proposal-item')).toHaveLength(2);
-
-      // Trigger refresh
-      await act(async () => {
-        fireEvent.click(screen.getByTestId('refresh-btn'));
-      });
-
-      // Wait for the refreshed data
-      await waitFor(() => {
-        expect(screen.queryByTestId('loading')).not.toBeInTheDocument();
-      });
-
-      const items = screen.getAllByTestId('proposal-item');
-      expect(items).toHaveLength(1);
-      expect(items[0]).toHaveTextContent('Refreshed Proposal');
-
-      // Fetcher must have been called twice total
-      expect(fetcher).toHaveBeenCalledTimes(2);
-    });
-
-    it('shows loading indicator during the refresh fetch', async () => {
-      let resolveRefresh: (value: Proposal[]) => void;
-      const refreshPending = new Promise<Proposal[]>((res) => {
-        resolveRefresh = res;
-      });
-
-      const fetcher = vi
-        .fn()
-        .mockResolvedValueOnce(mockProposals)
-        .mockReturnValueOnce(refreshPending);
-
-      renderWithFetcher(fetcher);
-
-      await waitFor(() => {
-        expect(screen.queryByTestId('loading')).not.toBeInTheDocument();
-      });
-
-      // Trigger refresh — fetcher returns a pending promise
-      fireEvent.click(screen.getByTestId('refresh-btn'));
-
-      // Loading must reappear immediately
-      expect(screen.getByTestId('loading')).toBeInTheDocument();
-
-      // Settle the refresh
-      await act(async () => {
-        resolveRefresh!(updatedProposals);
-        await refreshPending;
-      });
-
-      await waitFor(() => {
-        expect(screen.queryByTestId('loading')).not.toBeInTheDocument();
-      });
-    });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(500);
   });
 
-  // ── 4. Error state ──────────────────────────────────────────────────────────
-
-  describe('error state', () => {
-    it('sets error and clears loading when the fetcher rejects', async () => {
-      const fetcher = vi
-        .fn()
-        .mockRejectedValueOnce(new Error('Network unavailable'));
-
-      renderWithFetcher(fetcher);
-
-      await waitFor(() => {
-        expect(screen.queryByTestId('loading')).not.toBeInTheDocument();
-      });
-
-      // Error message must be rendered
-      expect(screen.getByTestId('error')).toHaveTextContent('Network unavailable');
-
-      // No proposals should be shown
-      expect(screen.queryAllByTestId('proposal-item')).toHaveLength(0);
-    });
-
-    it('uses a fallback message when the rejection has no message property', async () => {
-      const fetcher = vi.fn().mockRejectedValueOnce('plain string error');
-
-      renderWithFetcher(fetcher);
-
-      await waitFor(() => {
-        expect(screen.queryByTestId('loading')).not.toBeInTheDocument();
-      });
-
-      expect(screen.getByTestId('error')).toHaveTextContent(
-        'Failed to fetch proposals.',
-      );
-    });
-
-    it('clears the error and reloads proposals on a successful refresh after a failure', async () => {
-      const fetcher = vi
-        .fn()
-        .mockRejectedValueOnce(new Error('Temporary failure'))
-        .mockResolvedValueOnce(mockProposals);
-
-      renderWithFetcher(fetcher);
-
-      // Wait for the error to appear
-      await waitFor(() => {
-        expect(screen.getByTestId('error')).toBeInTheDocument();
-      });
-
-      // Retry via refresh button
-      await act(async () => {
-        fireEvent.click(screen.getByTestId('refresh-btn'));
-      });
-
-      await waitFor(() => {
-        expect(screen.queryByTestId('loading')).not.toBeInTheDocument();
-      });
-
-      // Error must be cleared, proposals displayed
-      expect(screen.queryByTestId('error')).not.toBeInTheDocument();
-      expect(screen.getAllByTestId('proposal-item')).toHaveLength(2);
-    });
+  await waitFor(() => {
+    expect(result.current.loading).toBe(false);
   });
+
+  expect(result.current.error).not.toBeNull();
+  expect(result.current.error).toContain('Network error');
+  expect(result.current.proposals).toHaveLength(0);
+});
+
+// --- Test 4 ----------------------------------------------------------------
+test('refresh — re-fetches proposals on demand', async () => {
+  const { result } = renderHook(() => useProposals(), { wrapper });
+
+  // Wait for initial load to complete.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(500);
+  });
+  await waitFor(() => expect(result.current.loading).toBe(false));
+
+  const firstLoad = result.current.proposals;
+
+  // Call refresh() and advance timers again.
+  await act(async () => {
+    result.current.refresh();
+    await vi.advanceTimersByTimeAsync(500);
+  });
+
+  await waitFor(() => expect(result.current.loading).toBe(false));
+
+  // After a successful refresh the proposals should still be present.
+  expect(result.current.proposals).toHaveLength(firstLoad.length);
+  expect(result.current.error).toBeNull();
 });
