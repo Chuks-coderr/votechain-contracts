@@ -1700,3 +1700,8 @@ git push origin feature/your-task-name
 • Open a Pull Request.
 
 Built with ❤️ on Stellar
+
+## Handsoff notes
+
+<!-- handsoff-issue-546 -->
+- #546: [Contracts] Bound delegation depth and prevent delegation cycles
