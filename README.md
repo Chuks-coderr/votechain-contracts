@@ -1705,3 +1705,6 @@ Built with ❤️ on Stellar
 
 <!-- handsoff-issue-546 -->
 - #546: [Contracts] Bound delegation depth and prevent delegation cycles
+
+<!-- handsoff-issue-547 -->
+- #547: [Contracts] Add a pause/unpause two-step admin transfer guard
