@@ -86,10 +86,88 @@ recommended follow-up:
 3. Mark the new job as a required status check once it has run clean on a
    few PRs, mirroring how `enforce-severity-gate` was adopted for CodeQL.
 
+## Backend ↔ Indexer contract testing (issue #528)
+
+The backend also consumes the indexer's REST API. A separate Pact contract
+covers that consumer/provider pair so a breaking change in the indexer API is
+caught before deploy.
+
+### What interaction is covered
+
+The backend acts as the Pact **consumer** and the indexer as the **provider**.
+The contract lives in `backend/src/__contract__/indexer.pact.spec.ts` and
+defines the interaction the backend relies on when reading indexed data:
+
+- `GET /events` — the indexer's event listing endpoint, verified against the
+  `{ data: [...], pagination: { cursor, hasMore } }` shape the backend's
+  indexer client parses. The interaction pins the request (query params such
+  as `contractId`/`cursor`/`limit`) and the response body/status so a renamed
+  field, changed type, or altered pagination format fails the contract.
+
+If the backend starts consuming additional indexer endpoints, add a matching
+interaction to the same spec following the existing pattern rather than
+introducing a new mechanism.
+
+### Running the contract test
+
+The contract spec depends on `@pact-foundation/pact`, declared in
+`backend/package.json` `devDependencies` but intentionally **not** part of the
+default `npm test` run:
+
+- The default backend test config only includes `*.test.ts`.
+- The contract spec is named `indexer.pact.spec.ts` (not `*.test.ts`) and has
+  its own config, `backend/vitest.contract.config.ts`, which includes
+  `src/**/*.pact.spec.ts`.
+- Run it explicitly with `npm --prefix backend run test:contract`.
+
+This keeps `npm test` free of Pact for contributors who only touch unrelated
+backend code, while making the contract test a first-class, runnable suite.
+
+### How the pact is stored / published
+
+Running the contract test writes the generated pact file to
+`backend/pacts/backend-indexer.json` (the consumer/provider directory is
+configured in the spec). The file is:
+
+1. Committed alongside the spec so drift is visible in review diffs, and
+2. Uploaded as a CI build artifact on every run, so the provider side can
+   fetch the exact pact version that was generated for a given commit.
+
+If a Pact Broker is stood up later, the spec's `pactBrokerUrl` /
+`publishVerificationResults` options can be enabled to publish the pact and
+verification results there instead of relying on the committed file and
+artifacts.
+
+### Provider verification
+
+The indexer side verifies the pact against its real implementation. The
+provider verification test replays each interaction in
+`backend/pacts/backend-indexer.json` against the indexer's running API (or an
+in-process app instance) and fails if the actual response no longer matches
+the contract. This is what turns the consumer-defined contract into an
+enforced guarantee: the consumer test catches the backend's expectations
+drifting, and the provider verification catches the indexer breaking them.
+
+### CI gating
+
+A `pact-contract` job runs both sides on every PR:
+
+1. `npm --prefix backend ci && npm --prefix backend run test:contract` —
+   generates the pact and fails on consumer-side drift.
+2. Provider verification against the indexer — fails on provider-side drift.
+3. The generated pact file is uploaded as a build artifact.
+
+The job is intended to be marked as a required status check once it has run
+clean on a few PRs, mirroring how `enforce-severity-gate` was adopted for
+CodeQL (see `docs/security/sast-scanning.md`). Until then it runs and reports
+but does not block merge.
+
 ## References
 
-- `sdk/src/__contract__/proposals.pact.spec.ts` — the contract test itself
+- `sdk/src/__contract__/proposals.pact.spec.ts` — the SDK ↔ backend contract test
+- `backend/src/__contract__/indexer.pact.spec.ts` — the backend ↔ indexer contract test
+- `backend/pacts/backend-indexer.json` — generated pact file for the indexer contract
 - `backend/src/routes/proposals.ts` — the provider endpoints under contract
 - `sdk/src/client.ts` — why there is no HTTP vote endpoint to contract-test
 - [Pact docs](https://docs.pact.io/)
-- Issue #308
+- Issue #308, Issue #528

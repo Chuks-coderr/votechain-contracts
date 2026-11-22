@@ -128,6 +128,7 @@ import {
   suspendApiKey,
   reinstateApiKey,
 } from "../src/services/apiKeyService";
+import { apiKeyAuth } from "../src/middleware/apiKeyAuth";
 
 // ---------------------------------------------------------------------------
 // Helper to build a mock Express request/response/next for middleware tests
@@ -436,5 +437,78 @@ describe("apiKeyAuth middleware", () => {
     const call = (res._calls as Array<{ status?: number; body?: { error: { code: string } } }>)[0];
     expect(call?.status).toBe(403);
     expect(call?.body?.error?.code).toBe("SUSPENDED_KEY");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// End-to-end API key lifecycle integration test
+//
+// Exercises the full flow against the real apiKeyService + apiKeyAuth
+// middleware (Redis mocked in-memory):
+//   1. create a key (as the POST /api/keys handler would)
+//   2. use the raw key to call a protected route -> success
+//   3. revoke the key (as the DELETE /api/keys/:id handler would)
+//   4. call the protected route again with the revoked key -> 401
+// ---------------------------------------------------------------------------
+
+describe("API key lifecycle (integration)", () => {
+  beforeEach(() => {
+    store.clear();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    store.clear();
+  });
+
+  // Simulates a protected route guarded by apiKeyAuth. It only runs the
+  // handler when the middleware calls next(); otherwise the middleware has
+  // already written the error response.
+  async function callProtectedRoute(rawKey: string) {
+    const req = mockRequest({
+      headers: { authorization: `Bearer ${rawKey}` },
+    });
+    const res = mockResponse();
+    const next = vi.fn();
+
+    await apiKeyAuth(req as never, res as never, next);
+
+    const calls = res._calls as Array<{ status?: number; body?: unknown }>;
+    if (next.mock.calls.length > 0) {
+      // Middleware allowed the request through -> protected handler runs
+      res.status(200);
+      res.json({ ok: true, owner: (req.apiKeyMeta as { owner: string }).owner });
+    }
+    return { req, res, next, calls };
+  }
+
+  it("creates a key, uses it successfully, revokes it, then rejects it with 401", async () => {
+    // 1. Create a key (POST /api/keys with admin auth)
+    const { rawKey, meta } = await createApiKey("GLIFECYCLE", "Lifecycle Key");
+    expect(rawKey).toMatch(/^vc_[0-9a-f]{64}$/);
+    expect(meta.status).toBe("active");
+
+    // 2. Use the key against a protected route -> success
+    const first = await callProtectedRoute(rawKey);
+    expect(first.next).toHaveBeenCalled();
+    expect(first.req.apiKeyTier).toBe("api_key");
+    const okCall = first.calls[0];
+    expect(okCall?.status).toBe(200);
+    expect((okCall?.body as { ok: boolean }).ok).toBe(true);
+    expect((okCall?.body as { owner: string }).owner).toBe("GLIFECYCLE");
+
+    // 3. Revoke the key (DELETE /api/keys/:id)
+    await revokeApiKey(meta.id);
+    const revokedMeta = await getApiKeyMeta(meta.id);
+    expect(revokedMeta?.status).toBe("revoked");
+
+    // 4. Call the protected route again with the revoked key -> 401
+    const second = await callProtectedRoute(rawKey);
+    expect(second.next).not.toHaveBeenCalled();
+    const errCall = second.calls[0];
+    expect(errCall?.status).toBe(401);
+    expect(
+      (errCall?.body as { error: { code: string } }).error.code
+    ).toBe("INVALID_API_KEY");
   });
 });

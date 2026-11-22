@@ -27,6 +27,24 @@
  *   - In the POST /api/keys response body under `rawKey`.
  *   - In the POST /api/keys/:id/rotate response body under `rawKey`.
  * It is never stored or retrievable again.
+ *
+ * ── Public key discovery (JWKS-like) ──────────────────────────────────────
+ *
+ * GET /api/keys/jwks — PUBLIC (no auth). Returns the verification key set
+ * used to verify JWTs issued by VoteChain, in a JWKS-like shape:
+ *
+ *   { keys: [ { kid, kty, alg, use, n, e, status, ... }, ... ] }
+ *
+ * Each entry carries a stable `kid` (key id) so relying parties can select
+ * the correct key. The set contains:
+ *   - the active verification key(s), and
+ *   - keys that were rotated out but are still inside the overlap window
+ *     (status: "retiring"), so tokens signed with the old key keep verifying
+ *     until the overlap expires. Once the overlap window elapses, retiring
+ *     keys are dropped from the set and no longer verify.
+ *
+ * The overlap duration is configurable via KEY_ROTATION_OVERLAP_MS
+ * (default: 24 hours).
  */
 
 import { Router, Request, Response } from "express";
@@ -39,10 +57,29 @@ import {
   listApiKeys,
   ApiKeyTier,
 } from "./apiKeyStore";
+import {
+  getVerificationKeySet,
+  rotateVerificationKey,
+  getOverlapMs,
+} from "./verificationKeyStore";
 
 const router = Router();
 
-// All key management endpoints require admin authentication.
+// ── GET /api/keys/jwks — Public verification key set (no auth) ────────────
+//
+// Registered before the admin-auth middleware so it is publicly reachable.
+// Must also be registered before the "/:id" route so "jwks" is not treated
+// as a key id.
+
+router.get("/jwks", (_req: Request, res: Response) => {
+  const keys = getVerificationKeySet();
+  return res.json({
+    keys,
+    overlapMs: getOverlapMs(),
+  });
+});
+
+// All remaining key management endpoints require admin authentication.
 router.use(adminAuth);
 
 // ── Validators ─────────────────────────────────────────────────────────────
@@ -125,6 +162,23 @@ router.post("/:id/rotate", async (req: Request, res: Response) => {
       },
     });
   }
+});
+
+// ── POST /api/keys/verification/rotate — Rotate verification key ──────────
+//
+// Issues a new active verification key. The previously active key is moved
+// to "retiring" and remains in the public key set until the overlap window
+// expires.
+
+router.post("/verification/rotate", (_req: Request, res: Response) => {
+  const { active, retiring } = rotateVerificationKey();
+  return res.json({
+    active,
+    retiring,
+    overlapMs: getOverlapMs(),
+    warning:
+      "The previous verification key remains valid during the overlap window, then expires.",
+  });
 });
 
 // ── DELETE /api/keys/:id — Revoke a key ───────────────────────────────────

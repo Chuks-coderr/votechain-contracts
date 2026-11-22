@@ -32,6 +32,7 @@
 
 import { createClient, RedisClientType } from "redis";
 import { Request, Response, NextFunction } from "express";
+import { createHash } from "crypto";
 import { log } from "./requestTracing";
 
 // ── Redis client ───────────────────────────────────────────────────────────
@@ -164,6 +165,35 @@ const KEY = {
   item: (id: string | number) => `proposals:item:${id}`,
 };
 
+// ── ETag helpers ───────────────────────────────────────────────────────────
+
+/**
+ * Compute a deterministic, strong ETag for a serialized response body.
+ * Uses SHA-256 of the payload so identical bodies always yield the same tag.
+ */
+export function computeEtag(serialized: string): string {
+  const hash = createHash("sha256").update(serialized).digest("hex");
+  return `"${hash}"`;
+}
+
+/**
+ * Returns true when the request's If-None-Match header matches the given
+ * ETag. Handles comma-separated lists, the wildcard `*`, and weak validators
+ * (`W/"..."`).
+ */
+export function ifNoneMatchMatches(
+  header: string | string[] | undefined,
+  etag: string
+): boolean {
+  if (!header) return false;
+  const raw = Array.isArray(header) ? header.join(",") : header;
+  const normalized = etag.replace(/^W\//, "");
+  return raw
+    .split(",")
+    .map((t) => t.trim())
+    .some((t) => t === "*" || t.replace(/^W\//, "") === normalized);
+}
+
 // ── Middleware factory ─────────────────────────────────────────────────────
 
 /**
@@ -187,6 +217,12 @@ function cacheMiddleware(keyFn: (req: Request) => string, ttl: number) {
       if (cached !== null) {
         metrics.hits++;
         res.setHeader("X-Cache", "HIT");
+        const etag = computeEtag(cached);
+        res.setHeader("ETag", etag);
+        if (ifNoneMatchMatches(req.headers["if-none-match"], etag)) {
+          res.status(304).end();
+          return;
+        }
         res.setHeader("Content-Type", "application/json");
         return res.send(cached);
       }
@@ -203,8 +239,14 @@ function cacheMiddleware(keyFn: (req: Request) => string, ttl: number) {
     // Intercept res.json to store the response in Redis
     const originalJson = res.json.bind(res);
     res.json = (body: unknown) => {
+      const serialized = JSON.stringify(body);
+      const etag = computeEtag(serialized);
+      res.setHeader("ETag", etag);
+      if (ifNoneMatchMatches(req.headers["if-none-match"], etag)) {
+        res.status(304).end();
+        return res;
+      }
       if (isRedisReady() && redis) {
-        const serialized = JSON.stringify(body);
         redis.setEx(key, ttl, serialized).catch((err) =>
           log("error", "redis setEx error", { error: String(err) })
         );

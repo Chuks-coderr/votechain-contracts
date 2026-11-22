@@ -225,17 +225,21 @@ router.get("/proposals", cacheProposalList, async (req: Request, res: Response) 
   const hasMore = filtered.length > limit;
   const next_cursor = hasMore && data.length > 0 ? String(data[data.length - 1].id) : undefined;
 
+  // Build the response with a stable key ordering so the ETag computed by the
+  // cache middleware is deterministic across identical requests.
+  const pagination: Record<string, unknown> = {
+    limit,
+    has_more: hasMore,
+  };
+  if (next_cursor !== undefined) pagination.next_cursor = next_cursor;
+  if (cursor !== undefined) pagination.cursor = String(cursor);
+  if (state) pagination.state = state;
+  if (q) pagination.q = q;
+  if (tag) pagination.tag = tag.toLowerCase();
+
   const response: Record<string, unknown> = {
     data,
-    pagination: {
-      limit,
-      has_more: hasMore,
-      ...(next_cursor !== undefined ? { next_cursor } : {}),
-      ...(cursor !== undefined ? { cursor: String(cursor) } : {}),
-      ...(state ? { state } : {}),
-      ...(q ? { q } : {}),
-      ...(tag ? { tag: tag.toLowerCase() } : {}),
-    },
+    pagination,
   };
 
   res.json(response);
@@ -245,6 +249,7 @@ router.get("/proposals", cacheProposalList, async (req: Request, res: Response) 
 router.get("/proposals/:id", cacheProposalItem, async (req: Request, res: Response) => {
   const { id } = req.params;
   // TODO: fetch single proposal from Stellar RPC / indexer
+  // Stable key ordering keeps the ETag deterministic across requests.
   res.json({ id });
 });
 

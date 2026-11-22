@@ -40,6 +40,31 @@ describe("proposal HTTP lifecycle", () => {
     expect(response.body).toEqual({ id: "proposal-1" });
   });
 
+  it("returns 304 when If-None-Match matches the proposal ETag", async () => {
+    const first = await request(app).get("/api/proposals");
+
+    expect(first.status).toBe(200);
+    const etag = first.headers.etag;
+    expect(etag).toBeTruthy();
+
+    const second = await request(app)
+      .get("/api/proposals")
+      .set("If-None-Match", etag);
+
+    expect(second.status).toBe(304);
+    expect(second.text).toBe("");
+    expect(second.body).toEqual({});
+  });
+
+  it("returns 200 with a body when If-None-Match does not match", async () => {
+    const response = await request(app)
+      .get("/api/proposals")
+      .set("If-None-Match", '"stale-etag"');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual([]);
+  });
+
   it("invalidates proposal cache through HTTP", async () => {
     const response = await request(app)
       .post("/api/proposals/invalidate")

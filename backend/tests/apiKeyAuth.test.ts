@@ -43,6 +43,13 @@ import {
   getApiKeyById,
   _clearStoreForTesting,
 } from "../src/middleware/apiKeyStore";
+import {
+  getVerificationKeys,
+  rotateSigningKey,
+  verifyToken,
+  signToken,
+  _resetKeyStoreForTesting,
+} from "../src/routes/keys";
 
 // ── Test-double helpers ────────────────────────────────────────────────────
 
@@ -477,5 +484,91 @@ describe("apiKeyAuth + abuseDetection pipeline", () => {
     expect(getCtx.status).not.toBe(429);
     // Remaining should reflect 999 reads left
     expect(getCtx.headers["X-RateLimit-Remaining"]).toBe(999);
+  });
+});
+
+// ── /keys key rotation tests ───────────────────────────────────────────────
+
+describe("/keys key rotation", () => {
+  beforeEach(() => {
+    _resetKeyStoreForTesting();
+  });
+
+  it("returns the active verification key set with kid", () => {
+    const keys = getVerificationKeys();
+
+    expect(keys.length).toBeGreaterThanOrEqual(1);
+    for (const key of keys) {
+      expect(typeof key.kid).toBe("string");
+      expect(key.kid.length).toBeGreaterThan(0);
+      expect(typeof key.publicKey).toBe("string");
+    }
+  });
+
+  it("returns both old and new kids during the overlap window", () => {
+    const before = getVerificationKeys();
+    expect(before).toHaveLength(1);
+    const oldKid = before[0].kid;
+
+    // Rotate with a generous overlap so both keys are published.
+    const { kid: newKid } = rotateSigningKey({ overlapMs: 60_000 });
+    expect(newKid).not.toBe(oldKid);
+
+    const during = getVerificationKeys();
+    const kids = during.map((k) => k.kid);
+    expect(kids).toContain(oldKid);
+    expect(kids).toContain(newKid);
+    expect(during).toHaveLength(2);
+  });
+
+  it("verifies tokens signed with both old and new keys during overlap", () => {
+    const oldKid = getVerificationKeys()[0].kid;
+
+    // Sign a token with the old (current) key before rotation.
+    const oldToken = signToken({ sub: "dao-old" });
+
+    const { kid: newKid } = rotateSigningKey({ overlapMs: 60_000 });
+
+    // Sign a token with the new key after rotation.
+    const newToken = signToken({ sub: "dao-new" });
+
+    // Both tokens must verify while the overlap window is open.
+    const oldResult = verifyToken(oldToken);
+    const newResult = verifyToken(newToken);
+
+    expect(oldResult.valid).toBe(true);
+    expect(oldResult.kid).toBe(oldKid);
+    expect(oldResult.payload?.sub).toBe("dao-old");
+
+    expect(newResult.valid).toBe(true);
+    expect(newResult.kid).toBe(newKid);
+    expect(newResult.payload?.sub).toBe("dao-new");
+  });
+
+  it("rejects the old key after the overlap window expires", () => {
+    const oldKid = getVerificationKeys()[0].kid;
+    const oldToken = signToken({ sub: "dao-expiring" });
+
+    // Rotate with a very short overlap and advance the clock past it.
+    const now = Date.now();
+    const { kid: newKid } = rotateSigningKey({ overlapMs: 1_000 });
+
+    // Sanity: old key still valid immediately after rotation.
+    expect(verifyToken(oldToken).valid).toBe(true);
+
+    // Advance time beyond the overlap window.
+    const spy = vi.spyOn(Date, "now").mockReturnValue(now + 5_000);
+    try {
+      const keys = getVerificationKeys();
+      const kids = keys.map((k) => k.kid);
+      expect(kids).not.toContain(oldKid);
+      expect(kids).toContain(newKid);
+
+      const result = verifyToken(oldToken);
+      expect(result.valid).toBe(false);
+      expect(result.reason).toBe("unknown_kid");
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

@@ -43,6 +43,7 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { log } from "./requestTracing";
+import { getVerificationKeys } from "../routes/keys";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -211,12 +212,22 @@ export function adminAuth(req: Request, res: Response, next: NextFunction): void
   const token = authHeader.slice("Bearer ".length);
 
   // ── Step 3: Verify JWT ─────────────────────────────────────────────────
-  const secret = process.env.ADMIN_JWT_SECRET ?? "changeme";
-  let payload: AdminTokenPayload;
+  // Accept any key currently published by the /keys endpoint: the active key
+  // plus any rotated-out keys still inside their overlap window. Tokens signed
+  // with a retired key verify during the overlap and fail once it expires.
+  const verificationKeys = getVerificationKeys();
+  let payload: AdminTokenPayload | undefined;
 
-  try {
-    payload = jwt.verify(token, secret) as AdminTokenPayload;
-  } catch {
+  for (const { secret } of verificationKeys) {
+    try {
+      payload = jwt.verify(token, secret) as AdminTokenPayload;
+      break;
+    } catch {
+      // Try the next key in the set.
+    }
+  }
+
+  if (!payload) {
     recordFailure(ip, "invalid_or_expired_token");
     res.status(401).json({
       error: {
