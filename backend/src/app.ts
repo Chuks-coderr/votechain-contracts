@@ -18,6 +18,9 @@ import helmet from "helmet";
 import http from "http";
 import { connectRedis, getRedis } from "./middleware/redisCache";
 import { requestTracing } from "./middleware/requestTracing";
+import { requestTimeout } from "./middleware/requestTimeout";
+import { compression } from "./middleware/compression";
+import { loadConfig } from "./config";
 import { apiKeyAuth } from "./middleware/apiKeyAuth";
 import { rateLimit } from "./middleware/rateLimit";
 import { jsonBodyParser } from "./middleware/jsonBodyParser";
@@ -28,6 +31,7 @@ import proposalRoutes from "./routes/proposals";
 import leaderboardRoutes from "./routes/leaderboard";
 import apiKeysRoutes from "./routes/apiKeys";
 import adminAuditLogRoutes from "./routes/adminAuditLog";
+import authRoutes from "./routes/auth";
 import cspReportRoutes from "./routes/cspReport";
 import {
   notFoundHandler,
@@ -35,56 +39,19 @@ import {
 } from "./middleware/errorHandler";
 
 // ---------------------------------------------------------------------------
-// Environment variable validation
+// Configuration (loaded once at startup)
 // ---------------------------------------------------------------------------
 
-interface EnvConfig {
-  PORT: string;
-  REDIS_URL: string;
-  ALLOWED_ORIGINS: string;
-}
-
-function validateEnv(): EnvConfig {
-  const required: Array<keyof Pick<EnvConfig, "REDIS_URL">> = ["REDIS_URL"];
-  const missing: string[] = [];
-
-  for (const key of required) {
-    if (!process.env[key]) {
-      missing.push(key);
-    }
-  }
-
-  if (missing.length > 0) {
-    console.error(
-      "[startup] Missing required environment variables:\n" +
-        missing.map((k) => `  • ${k}`).join("\n") +
-        "\n\nSet these variables before starting the server. " +
-        "See .env.example for reference."
-    );
-    process.exit(1);
-  }
-
-  return {
-    PORT: process.env.PORT ?? "3001",
-    REDIS_URL: process.env.REDIS_URL!,
-    // Default to localhost dev origin; production sets this to the real domain.
-    ALLOWED_ORIGINS:
-      process.env.ALLOWED_ORIGINS ?? "http://localhost:5173",
-  };
-}
-
-const env = validateEnv();
+const config = loadConfig();
 
 // ---------------------------------------------------------------------------
 // CORS configuration (#32)
 // ---------------------------------------------------------------------------
 
-const allowedOrigins = env.ALLOWED_ORIGINS.split(",").map((o) => o.trim());
-
 const corsOptions: cors.CorsOptions = {
   origin(origin, callback) {
     // Allow requests with no origin (curl, server-to-server, health checks)
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (!origin || config.ALLOWED_ORIGINS.includes(origin)) {
       callback(null, true);
     } else {
       callback(new Error(`CORS: origin '${origin}' not allowed`));
@@ -143,6 +110,13 @@ app.use("/", healthRoutes);
 // since the browser-originated report never carries an API key.
 app.use("/", cspReportRoutes);
 
+// ── Admin auth token issuance & refresh ────────────────────────────────
+//
+// Mounted BEFORE apiKeyAuth/rateLimit so a client can obtain a JWT without
+// already holding an API key. Login/refresh validate the admin address and
+// issue short-lived access tokens + refreshable refresh tokens.
+app.use("/api", authRoutes);
+
 // ── API key authentication & tiered rate limiting ──────────────────────────
 //
 // Order matters:
@@ -153,6 +127,8 @@ app.use("/", cspReportRoutes);
 // intentionally excluded (mounted above, before this block).
 app.use("/api", apiKeyAuth);
 app.use("/api", rateLimit);
+app.use("/api", requestTimeout);
+app.use("/api", compression);
 
 // ── Routes ─────────────────────────────────────────────────────────────────
 app.use("/api", proposalRoutes);
@@ -165,8 +141,6 @@ app.use(notFoundHandler);
 
 // Global error handler — must be the very last middleware registered.
 app.use(globalErrorHandler);
-
-const PORT = parseInt(env.PORT, 10);
 
 // ---------------------------------------------------------------------------
 // Graceful shutdown (#231)
@@ -249,11 +223,11 @@ function registerGracefulShutdown(server: http.Server): void {
 
 // connectRedis now degrades gracefully on failure (#38) — the server always
 // starts regardless of whether Redis is reachable.
-connectRedis(env.REDIS_URL).then(() => {
+connectRedis(config.REDIS_URL).then(() => {
   const server = http.createServer(app);
   registerGracefulShutdown(server);
-  server.listen(PORT, () =>
-    console.log(`[server] listening on :${PORT}`)
+  server.listen(config.PORT, () =>
+    console.log(`[server] listening on :${config.PORT}`)
   );
 });
 

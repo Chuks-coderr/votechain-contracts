@@ -43,6 +43,7 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { log } from "./requestTracing";
+import { getConfig } from "./config";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -211,11 +212,11 @@ export function adminAuth(req: Request, res: Response, next: NextFunction): void
   const token = authHeader.slice("Bearer ".length);
 
   // ── Step 3: Verify JWT ─────────────────────────────────────────────────
-  const secret = process.env.ADMIN_JWT_SECRET ?? "changeme";
+  const { ADMIN_JWT_SECRET } = getConfig();
   let payload: AdminTokenPayload;
 
   try {
-    payload = jwt.verify(token, secret) as AdminTokenPayload;
+    payload = jwt.verify(token, ADMIN_JWT_SECRET) as AdminTokenPayload;
   } catch {
     recordFailure(ip, "invalid_or_expired_token");
     res.status(401).json({
@@ -229,7 +230,7 @@ export function adminAuth(req: Request, res: Response, next: NextFunction): void
   }
 
   // ── Step 4: Verify stellarAddress matches admin ────────────────────────
-  const adminAddress = process.env.ADMIN_STELLAR_ADDRESS;
+  const adminAddress = getConfig().ADMIN_STELLAR_ADDRESS;
 
   if (!adminAddress || payload.stellarAddress !== adminAddress) {
     recordFailure(ip, "stellar_address_mismatch");
