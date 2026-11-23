@@ -15,6 +15,7 @@
 import { Router, Request, Response } from "express";
 import { getGovernanceAnalytics } from "../services/analyticsService";
 import { getRedis } from "../middleware/redisCache";
+import { aggregateIntoBuckets, BucketGranularity } from "../services/analyticsAggregation";
 
 const router = Router();
 
@@ -35,6 +36,29 @@ router.get("/governance/analytics", async (_req: Request, res: Response) => {
     console.error("[Analytics] Error computing governance analytics:", error);
     return res.status(500).json({ error: "Internal server error" });
   }
+});
+
+/**
+ * POST /governance/analytics/buckets
+ *
+ * Returns time-bucketed participation and proposal counts.
+ * Query param: granularity=hourly|daily  (default: daily)
+ *
+ * Accepts a JSON body with a `proposals` array for the input data.
+ * In production this would pull from the indexer; here it accepts the data
+ * directly so the endpoint is testable without a live DB.
+ */
+router.post("/governance/analytics/buckets", (req: Request, res: Response) => {
+  const granularity: BucketGranularity =
+    req.query.granularity === "hourly" ? "hourly" : "daily";
+  const proposals = req.body?.proposals;
+
+  if (!Array.isArray(proposals)) {
+    return res.status(400).json({ error: "'proposals' must be an array" });
+  }
+
+  const buckets = aggregateIntoBuckets(proposals, granularity);
+  return res.json({ granularity, buckets });
 });
 
 export default router;

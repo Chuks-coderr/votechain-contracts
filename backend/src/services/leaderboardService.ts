@@ -1,16 +1,5 @@
 // Copyright 2024 VoteChain Contributors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 import { RedisClientType } from 'redis';
 import { LEADERBOARD_CACHE_TTL_SECONDS } from '../middleware/redisCache';
@@ -40,7 +29,6 @@ export async function getLeaderboard(
 
   const cacheKey = `${LEADERBOARD_CACHE_KEY_PREFIX}${filterKey}`;
 
-  // Try to get from cache first
   const cached = await redisClient.get(cacheKey);
   if (cached) {
     return JSON.parse(cached) as LeaderboardEntry[];
@@ -73,8 +61,32 @@ export async function invalidateLeaderboardCache(
 }
 
 /**
+ * Warms the leaderboard cache proactively after an indexer update (#525).
+ *
+ * Called immediately after cache invalidation so the first user to read the
+ * leaderboard after an update always gets a cache hit rather than paying the
+ * compute cost of a cold load.
+ *
+ * Uses the default (empty string) filterKey to warm the base leaderboard.
+ * Additional filter variants can be passed via the filterKeys parameter.
+ */
+export async function warmLeaderboardCache(
+  redisClient: MaybeRedis,
+  filterKeys: string[] = [""],
+): Promise<void> {
+  if (!redisClient?.isOpen) return;
+  for (const key of filterKeys) {
+    await getLeaderboard(redisClient, key);
+  }
+}
+
+/**
  * Updates a voter's participation stats.
  * Called by the indexer when processing on-chain votes.
+ *
+ * After recording the vote:
+ * 1. Invalidates stale cache entries.
+ * 2. Warms the cache so the next read is a hit (#525).
  */
 export async function recordVote(
   redisClient: MaybeRedis,
@@ -89,6 +101,8 @@ export async function recordVote(
   await redisClient.hIncrByFloat(key, 'total_weight_cast', weight);
   await redisClient.sAdd(`voter:${address}:proposals`, proposalId);
   await invalidateLeaderboardCache(redisClient);
+  // Warm cache immediately after invalidation (#525)
+  await warmLeaderboardCache(redisClient);
 }
 
 /**

@@ -102,3 +102,65 @@ describe("POST /simulate — HTML tag validation (#320)", () => {
     expect(res.body.error).toContain("HTML tags");
   });
 });
+
+describe("POST /simulate — fee_estimate field (#523)", () => {
+  it("includes fee_estimate on a successful 200 response", async () => {
+    const res = await request(app)
+      .post("/simulate")
+      .send({
+        token_supply: 10_000_000,
+        votes_yes: 6_000_000,
+        votes_no: 1_000_000,
+        votes_abstain: 500_000,
+        quorum: 5_000_000,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.fee_estimate).toBeDefined();
+  });
+
+  it("fee_estimate.min_fee_xlm is a positive number", async () => {
+    const res = await request(app)
+      .post("/simulate")
+      .send({
+        token_supply: 10_000_000,
+        votes_yes: 6_000_000,
+        votes_no: 1_000_000,
+        votes_abstain: 500_000,
+        quorum: 5_000_000,
+      });
+
+    expect(typeof res.body.fee_estimate.min_fee_xlm).toBe("number");
+    expect(res.body.fee_estimate.min_fee_xlm).toBeGreaterThan(0);
+  });
+
+  it("fee_estimate.max_fee_xlm >= fee_estimate.min_fee_xlm", async () => {
+    const res = await request(app)
+      .post("/simulate")
+      .send({
+        token_supply: 10_000_000,
+        votes_yes: 6_000_000,
+        votes_no: 1_000_000,
+        votes_abstain: 500_000,
+        quorum: 5_000_000,
+      });
+
+    expect(res.body.fee_estimate.max_fee_xlm).toBeGreaterThanOrEqual(
+      res.body.fee_estimate.min_fee_xlm,
+    );
+  });
+
+  it('fee_estimate.note === "best-effort estimate only"', async () => {
+    const res = await request(app)
+      .post("/simulate")
+      .send({
+        token_supply: 10_000_000,
+        votes_yes: 6_000_000,
+        votes_no: 1_000_000,
+        votes_abstain: 500_000,
+        quorum: 5_000_000,
+      });
+
+    expect(res.body.fee_estimate.note).toBe("best-effort estimate only");
+  });
+});

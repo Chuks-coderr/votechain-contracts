@@ -76,20 +76,32 @@ export async function sendCsv<T>(
   formatRow: (row: T) => string,
 ): Promise<void> {
   const result = await capCsvRows(rows);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
   res.setHeader("X-Record-Count", result.count);
   if (result.truncated) {
     res.setHeader("X-Truncated", "true");
   }
-  res.setHeader("Content-Type", "text/csv; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
 
-  const stream = new PassThrough();
-  stream.pipe(res);
-  stream.write(`${columns}\r\n`);
-  for (const row of result.rows) {
-    stream.write(`${formatRow(row)}\r\n`);
-  }
-  stream.end();
+  await new Promise<void>((resolve, reject) => {
+    const pass = new PassThrough();
+    pass.on("error", reject);
+    res.on("error", reject);
+    res.on("finish", resolve);
+    pass.pipe(res);
+
+    const writeWithBackpressure = async () => {
+      const canWrite = pass.write(`${columns}\r\n`);
+      if (!canWrite) await new Promise<void>((r) => pass.once("drain", r));
+      for (const row of result.rows) {
+        const ok = pass.write(`${formatRow(row)}\r\n`);
+        if (!ok) await new Promise<void>((r) => pass.once("drain", r));
+      }
+      pass.end();
+    };
+
+    writeWithBackpressure().catch(reject);
+  });
 }
 
 // ---------------------------------------------------------------------------
