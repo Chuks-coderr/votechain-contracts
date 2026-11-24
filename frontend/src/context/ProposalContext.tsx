@@ -16,8 +16,7 @@
  * ProposalContext — global proposal data store (issue #10).
  *
  * Provides: proposals, loading, error, refresh()
- * Fetches proposals once and makes them available application-wide
- * via <ProposalProvider> in main.tsx.
+ * Fetches proposals from the backend API which queries the on-chain contract.
  */
 import React, {
   createContext,
@@ -26,8 +25,7 @@ import React, {
   useEffect,
   useState,
 } from 'react';
-import type { Proposal } from '../types';
-import { sampleProposals } from '../data';
+import type { Proposal, ProposalState } from '../types';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -46,12 +44,54 @@ export interface ProposalContextValue {
 
 const ProposalContext = createContext<ProposalContextValue | null>(null);
 
-// ── Fetcher (replace with real API call) ─────────────────────
+// ── Helpers to transform backend/RawProposal to frontend Proposal ────────────────────────────
+
+interface RawProposal {
+  id: number;
+  title: string;
+  proposer: string;
+  description: string;
+  votes_yes: number;
+  votes_no: number;
+  votes_abstain: number;
+  quorum: number;
+  start_time: number;
+  end_time: number;
+  state: ProposalState;
+  execute_after: number;
+}
+
+function transformProposal(raw: RawProposal): Proposal {
+  const totalWeight = raw.votes_yes + raw.votes_no + raw.votes_abstain;
+  return {
+    id: String(raw.id),
+    title: raw.title,
+    description: raw.description || '',
+    proposer: raw.proposer,
+    state: raw.state,
+    createdAt: new Date(raw.start_time * 1000).toISOString(),
+    endAt: new Date(raw.end_time * 1000).toISOString(),
+    quorum: raw.quorum,
+    votesCount: 0,
+    totalWeight,
+    votes: [],
+    tags: [],
+  };
+}
+
+// ── Fetcher (calls backend API which queries the contract) ──────────────────────────────
 
 async function fetchProposals(): Promise<Proposal[]> {
-  // TODO: replace with `await fetch('/api/proposals').then(r => r.json())`
-  // Using sample data until the backend endpoint is wired up.
-  return new Promise((resolve) => setTimeout(() => resolve(sampleProposals), 400));
+  const base = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
+  const res = await fetch(`${base}/api/proposals`, {
+    headers: { Accept: 'application/json' },
+  });
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+  }
+  const data = await res.json();
+  const rawProposals: RawProposal[] = Array.isArray(data) ? data : data.data ?? [];
+  return rawProposals.map(transformProposal);
 }
 
 // ── Provider ─────────────────────────────────────────────────
