@@ -20,6 +20,7 @@ import { useTransactionStatus } from "../hooks/useTransactionStatus";
 import { useWallet } from "../context/WalletContext";
 import { sanitizeText } from "../utils/sanitize";
 import type { RawProposal } from "../types";
+import { VoteChainClient, FreighterSigner, Networks, type Vote } from "@votechain/sdk";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,30 +31,19 @@ interface VotedSet {
 }
 
 // ---------------------------------------------------------------------------
-// Freighter signing helper
+// Freighter signing helper using SDK
 // ---------------------------------------------------------------------------
 
-type FreighterApi = {
-  isConnected: () => Promise<boolean>;
-  getPublicKey: () => Promise<string>;
-  getNetwork: () => Promise<string>;
-  requestAccess: () => Promise<void>;
-  signTransaction: (xdr: string, opts?: { network?: string }) => Promise<string>;
-};
-
-function getFreighter(): FreighterApi | undefined {
+function getFreighter(): import("@votechain/sdk").FreighterApi | undefined {
   return (window as unknown as Record<string, unknown>).freighter as
-    | FreighterApi
+    | import("@votechain/sdk").FreighterApi
     | undefined;
 }
 
 /**
- * Build a minimal cast_vote XDR and sign it with Freighter.
- * In a production app this would call the Stellar SDK to build a real
- * contract invocation XDR. Here we produce a deterministic placeholder
- * that encodes the vote intent so the rest of the UI flow works end-to-end.
- *
- * Returns the signed XDR hash (transaction hash after submission).
+ * Cast a vote using the VoteChain SDK with Freighter.
+ * Builds a real contract invocation transaction, signs it with Freighter,
+ * and submits it to the Stellar network.
  */
 async function castVoteViaFreighter(
   proposalId: number,
@@ -63,22 +53,36 @@ async function castVoteViaFreighter(
   const freighter = getFreighter();
   if (!freighter) throw new Error("Freighter extension not found.");
 
-  // Encode a placeholder XDR representing the cast_vote call.
-  // Replace this with real Stellar SDK XDR construction before mainnet.
-  const payload = btoa(
-    JSON.stringify({ fn: "cast_vote", proposal_id: proposalId, vote: choice })
-  );
+  // Get contract configuration from environment
+  const rpcUrl = import.meta.env.VITE_SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";
+  const contractId = import.meta.env.VITE_GOVERNANCE_CONTRACT_ID;
+  if (!contractId) throw new Error("Governance contract ID not configured (VITE_GOVERNANCE_CONTRACT_ID).");
 
-  const signedXdr = await freighter.signTransaction(payload, { network });
+  // Determine network passphrase
+  const networkPassphrase = network === "testnet" ? Networks.TESTNET : Networks.PUBLIC;
 
-  // After signing, submit to Stellar RPC and return the transaction hash.
-  // In production: submit signedXdr via Horizon/Soroban RPC and return the real hash.
-  // For now we derive a deterministic mock hash from the signed XDR.
-  const encoder = new TextEncoder();
-  const data = encoder.encode(signedXdr);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+  // Create SDK client and signer
+  const client = new VoteChainClient({
+    rpcUrl,
+    networkPassphrase,
+    contractId,
+  });
+  const signer = new FreighterSigner(freighter);
+
+  // Map UI choice to SDK vote type
+  const vote: Vote = choice as Vote;
+
+  // Get voter address
+  const voter = await signer.publicKey();
+
+  // Cast vote
+  const result = await client.castVote(signer, {
+    voter,
+    proposalId: BigInt(proposalId),
+    vote,
+  });
+
+  return result.hash;
 }
 
 // ---------------------------------------------------------------------------
@@ -180,11 +184,12 @@ function VoteTallies({ yes, no, abstain }: VoteTalliesProps) {
 interface ProposalCardProps {
   proposal: RawProposal;
   voted: VoteChoice | undefined;
+  selectedChoice: VoteChoice | undefined;
   onVote: (choice: VoteChoice) => void;
   submitting: boolean;
 }
 
-function ProposalCard({ proposal, voted, onVote, submitting }: ProposalCardProps) {
+function ProposalCard({ proposal, voted, selectedChoice, onVote, submitting }: ProposalCardProps) {
   const secs = secondsUntil(proposal.end_time);
   const endingSoon = secs > 0 && secs < 3600;
 
@@ -263,6 +268,7 @@ function ProposalCard({ proposal, voted, onVote, submitting }: ProposalCardProps
               onClick={() => onVote(choice)}
               disabled={submitting}
               aria-label={`Vote ${choice} on proposal ${proposal.id}: ${sanitizeText(proposal.title)}`}
+              aria-pressed={selectedChoice === choice}
             >
               {choice}
             </button>
@@ -423,6 +429,7 @@ export default function VotingPanel() {
               <ProposalCard
                 proposal={p}
                 voted={voted[p.id]}
+                selectedChoice={pendingProposal?.id === p.id ? pendingChoice : undefined}
                 onVote={(choice) => openConfirmation(p, choice)}
                 submitting={submitting}
               />

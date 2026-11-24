@@ -34,6 +34,8 @@ mod test_string_boundaries;
 mod test_already_voted_regression;
 #[cfg(test)]
 mod test_factories;
+#[cfg(test)]
+mod test_migration;
 
 use soroban_sdk::{contract, contractclient, contractimpl, token, Address, Env, String, Vec};
 use types::{ConfigKey, ContractConfig, ContractError, ContractState, ProposalState, ProposalType, Proposal, ProposalTemplate, TemplateProposalParams, Vote, VoteRecord};
@@ -910,6 +912,95 @@ impl GovernanceContract {
         save_proposal(&env, &proposal);
         mark_extended(&env, proposal_id);
         events::voting_extended(&env, proposal_id, old_end_time, new_end_time);
+        Ok(())
+    }
+
+    /// Extends the timelock of a proposal that has already passed — the
+    /// timelock-extend (queue) counterpart to [`extend_voting`].
+    ///
+    /// After [`finalise`] marks a proposal `Passed`, it becomes executable once
+    /// the ledger timestamp reaches `execute_after`. This function lets the admin
+    /// push `execute_after` further into the future so a queued proposal can be
+    /// delayed without cancelling it (which would discard the recorded outcome).
+    ///
+    /// # Extend flow
+    /// 1. A proposal is finalised and its state becomes `Passed` with
+    ///    `execute_after = finalise_time + timelock_duration`.
+    /// 2. While the proposal is still `Passed`, the admin calls
+    ///    `extend_timelock(admin, proposal_id, additional_seconds)`.
+    /// 3. `execute_after` is increased by `additional_seconds` and the shared
+    ///    `ProposalExtended` flag is set; a `tlextend` event is emitted.
+    /// 4. [`execute`] remains blocked until the (now later) `execute_after`.
+    ///
+    /// # Abuse prevention
+    /// A proposal may be extended **at most once** for its entire lifetime: the
+    /// same `ProposalExtended` flag is set by both [`extend_voting`] and this
+    /// function, so any second attempt reverts with
+    /// [`ContractError::AlreadyExtended`]. In addition, a single extension is
+    /// capped at 30 days (`MAX_TIMELOCK_EXTENSION`), so `execute_after` cannot be
+    /// pushed arbitrarily far into the future.
+    ///
+    /// # Parameters
+    /// - `admin`: the contract admin (must authorise).
+    /// - `proposal_id`: the `Passed` proposal whose timelock should be extended.
+    /// - `additional_seconds`: seconds to add to `execute_after`. Must be non-zero
+    ///   and must not exceed 30 days.
+    ///
+    /// # Errors
+    /// - [`ContractError::InvalidAddress`] if `admin` is the zero address.
+    /// - [`ContractError::NotAdmin`] if `admin` does not match the stored admin.
+    /// - [`ContractError::ContractPaused`] if the contract is paused.
+    /// - [`ContractError::InvalidDuration`] if `additional_seconds` is zero.
+    /// - [`ContractError::ProposalNotFound`] if `proposal_id` does not exist.
+    /// - [`ContractError::ProposalNotPassed`] if the proposal is not in `Passed` status.
+    /// - [`ContractError::AlreadyExtended`] if this proposal has already been extended once.
+    /// - [`ContractError::InvalidDurationRange`] if `additional_seconds` exceeds the
+    ///   30-day cap, or if the resulting `execute_after` would overflow.
+    pub fn extend_timelock(
+        env: Env,
+        admin: Address,
+        proposal_id: u64,
+        additional_seconds: u64,
+    ) -> Result<(), ContractError> {
+        // SEC-005: auth first.
+        admin.require_auth();
+        // SEC-004: reject zero address.
+        require_non_zero_address(&env, &admin)?;
+        if is_paused(&env) {
+            return Err(ContractError::ContractPaused);
+        }
+        if get_admin(&env)? != admin {
+            return Err(ContractError::NotAdmin);
+        }
+        if additional_seconds == 0 {
+            return Err(ContractError::InvalidDuration);
+        }
+
+        // Cap a single extension so the timelock cannot be delayed indefinitely.
+        // 30 days matches the maximum configurable timelock (`update_timelock`).
+        const MAX_TIMELOCK_EXTENSION: u64 = 2_592_000;
+        if additional_seconds > MAX_TIMELOCK_EXTENSION {
+            return Err(ContractError::InvalidDurationRange);
+        }
+
+        let mut proposal = load_proposal(&env, proposal_id)?;
+        if proposal.state != ProposalState::Passed {
+            return Err(ContractError::ProposalNotPassed);
+        }
+
+        if has_extended(&env, proposal_id) {
+            return Err(ContractError::AlreadyExtended);
+        }
+
+        let old_execute_after = proposal.execute_after;
+        let new_execute_after = old_execute_after
+            .checked_add(additional_seconds)
+            .ok_or(ContractError::InvalidDurationRange)?;
+
+        proposal.execute_after = new_execute_after;
+        save_proposal(&env, &proposal);
+        mark_extended(&env, proposal_id);
+        events::timelock_extended(&env, proposal_id, old_execute_after, new_execute_after);
         Ok(())
     }
 

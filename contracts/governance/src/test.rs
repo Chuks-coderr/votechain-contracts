@@ -793,6 +793,142 @@ fn test_extend_voting_inactive_proposal_reverts() {
 
 // ── end issue #105 ─────────────────────────────────────────────────────────────
 
+// ── timelock-extend (queue) mechanism for passed proposals ────────────────────
+//
+// Documents and tests the extend flow for passed proposals whose timelock needs
+// extension. A proposal may be extended at most once across its lifecycle
+// (shared `ProposalExtended` flag) and a single extension is capped at 30 days,
+// so execution cannot be delayed indefinitely.
+
+/// Create a `Passed` proposal with the given `timelock` configured before
+/// finalisation (so `execute_after = finalise_time + timelock`).
+///
+/// Uses the shared test env: quorum 100, voting duration 3600s, one Yes vote of
+/// weight 100 so the proposal passes.
+fn pass_proposal_with_timelock(t: &crate::test_helpers::TestEnv, timelock: u64) -> u64 {
+    if timelock > 0 {
+        t.client.update_timelock(&t.admin, &timelock);
+    }
+    let proposer = Address::generate(&t.env);
+    let voter = Address::generate(&t.env);
+    let id = create_test_proposal(t, &proposer);
+    mint_and_vote(t, &voter, id, Vote::Yes, 100);
+    // Advance past end_time (default 3600s), then finalise → Passed.
+    t.env.ledger().with_mut(|l| l.timestamp += 3601);
+    t.client.finalise(&id);
+    id
+}
+
+/// Extending the timelock of a passed proposal pushes `execute_after` further out.
+#[test]
+fn test_extend_timelock_success() {
+    let t = setup_env();
+    let id = pass_proposal_with_timelock(&t, 3600);
+    let before = t.client.get_proposal(&id);
+    assert_eq!(before.state, ProposalState::Passed);
+
+    t.client.extend_timelock(&t.admin, &id, &1800);
+
+    let after = t.client.get_proposal(&id);
+    assert_eq!(after.execute_after, before.execute_after + 1800);
+    assert_eq!(after.state, ProposalState::Passed);
+}
+
+/// A passed proposal remains blocked from execution until the extended time.
+#[test]
+fn test_extend_timelock_delays_execution() {
+    let t = setup_env();
+    let id = pass_proposal_with_timelock(&t, 3600);
+    // Extend by 1800s: execution now requires reaching the later timestamp.
+    t.client.extend_timelock(&t.admin, &id, &1800);
+    let p = t.client.get_proposal(&id);
+    // Move to just before the extended deadline — still not executable.
+    t.env.ledger().with_mut(|l| l.timestamp = p.execute_after - 1);
+    let res = t.client.try_execute(&t.admin, &id);
+    assert!(res.is_err());
+}
+
+/// Only the admin may extend a passed proposal's timelock.
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_extend_timelock_non_admin_reverts() {
+    let t = setup_env();
+    let id = pass_proposal_with_timelock(&t, 3600);
+    let non_admin = Address::generate(&t.env);
+    t.client.extend_timelock(&non_admin, &id, &1800);
+}
+
+/// A zero extension is meaningless and must revert.
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_extend_timelock_zero_seconds_reverts() {
+    let t = setup_env();
+    let id = pass_proposal_with_timelock(&t, 3600);
+    t.client.extend_timelock(&t.admin, &id, &0);
+}
+
+/// A single extension is capped at 30 days to prevent indefinite delay.
+#[test]
+#[should_panic(expected = "Error(Contract, #21)")]
+fn test_extend_timelock_exceeding_cap_reverts() {
+    let t = setup_env();
+    let id = pass_proposal_with_timelock(&t, 3600);
+    // Cap is 2_592_000s (30 days); request one second over it.
+    t.client.extend_timelock(&t.admin, &id, &2_592_001);
+}
+
+/// The timelock can only be extended on a proposal that has already passed.
+#[test]
+#[should_panic(expected = "Error(Contract, #12)")]
+fn test_extend_timelock_active_proposal_reverts() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let id = create_test_proposal(&t, &proposer); // still Active
+    t.client.extend_timelock(&t.admin, &id, &1800);
+}
+
+/// Once executed, a proposal is no longer `Passed` and cannot be extended.
+#[test]
+#[should_panic(expected = "Error(Contract, #12)")]
+fn test_extend_timelock_after_execute_reverts() {
+    let t = setup_env();
+    let id = pass_proposal_with_timelock(&t, 3600);
+    // Advance past the timelock and execute the proposal.
+    t.env.ledger().with_mut(|l| l.timestamp += 3601);
+    t.client.execute(&t.admin, &id);
+    t.client.extend_timelock(&t.admin, &id, &1800);
+}
+
+/// Double-extend is rejected: the timelock may be extended only once.
+#[test]
+#[should_panic(expected = "Error(Contract, #47)")]
+fn test_extend_timelock_double_extend_reverts() {
+    let t = setup_env();
+    let id = pass_proposal_with_timelock(&t, 3600);
+    t.client.extend_timelock(&t.admin, &id, &1800);
+    // Second extension on the same proposal must revert with AlreadyExtended.
+    t.client.extend_timelock(&t.admin, &id, &1800);
+}
+
+/// A voting-period extension also consumes the one-shot extension budget, so a
+/// proposal cannot be extended during voting *and* again after it passes.
+#[test]
+#[should_panic(expected = "Error(Contract, #47)")]
+fn test_extend_timelock_after_voting_extension_reverts() {
+    let t = setup_env();
+    let proposer = Address::generate(&t.env);
+    let voter = Address::generate(&t.env);
+    let id = create_test_proposal(&t, &proposer);
+    // Extend the voting period once while the proposal is still Active.
+    t.client.extend_voting(&t.admin, &id, &600);
+    // Then let it pass.
+    mint_and_vote(&t, &voter, id, Vote::Yes, 100);
+    t.env.ledger().with_mut(|l| l.timestamp += 4201);
+    t.client.finalise(&id);
+    // The shared flag means the timelock cannot be extended as well.
+    t.client.extend_timelock(&t.admin, &id, &1800);
+}
+
 // ── storage persistence tests ─────────────────────────────────────────────────
 
 #[test]

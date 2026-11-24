@@ -156,6 +156,11 @@ Cache entries are evicted proactively when the event indexer calls
 The full machine-readable spec is at [`api/openapi.yml`](../api/openapi.yml).
 Import it into Postman, Insomnia, or any OpenAPI-compatible tool.
 
+A ready-made, version-pinned **Postman collection** generated from this spec is
+available at [`api/postman/votechain-api.postman_collection.json`](../api/postman/votechain-api.postman_collection.json).
+Import it into Postman, set the `baseUrl` / `indexerUrl` variables, and try the
+endpoints immediately.
+
 To validate the spec locally (requires [Spectral](https://github.com/stoplightio/spectral)):
 
 ```bash

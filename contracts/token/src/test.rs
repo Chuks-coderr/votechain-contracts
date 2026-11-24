@@ -475,6 +475,131 @@ fn test_transfer_admin_emits_event() {
     }));
 }
 
+// ── SC-017: two-step admin transfer (propose/accept) ──────────────────────
+
+/// Reads the stored admin address from instance storage.
+fn stored_admin(env: &Env) -> Address {
+    env.storage()
+        .instance()
+        .get(&TokenDataKey::Admin)
+        .expect("admin is set after initialize")
+}
+
+/// Reads the pending admin nomination, if any.
+fn stored_pending_admin(env: &Env) -> Option<Address> {
+    env.storage()
+        .instance()
+        .get(&TokenDataKey::PendingAdmin)
+}
+
+#[test]
+fn test_propose_then_accept_admin_transfer() {
+    let (env, c) = setup();
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    c.initialize(&admin, &1_000);
+
+    // Propose the transfer (default 48 h window).
+    c.propose_admin_transfer(&admin, &new_admin, &0_u64);
+    assert_eq!(stored_pending_admin(&env), Some(new_admin.clone()));
+    // Admin is not transferred until acceptance.
+    assert_eq!(stored_admin(&env), admin);
+
+    // The nominee accepts within the window.
+    c.accept_admin_transfer(&new_admin);
+    assert_eq!(stored_admin(&env), new_admin);
+    assert_eq!(stored_pending_admin(&env), None);
+
+    // The new admin can mint; the old admin cannot.
+    c.mint(&new_admin, &user, &500);
+    assert_eq!(c.balance(&user), 500);
+    assert!(c.try_mint(&admin, &user, &100).is_err());
+}
+
+#[test]
+fn test_old_admin_cannot_mint_after_accept() {
+    let (env, c) = setup();
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    c.initialize(&admin, &1_000);
+    c.propose_admin_transfer(&admin, &new_admin, &0_u64);
+    c.accept_admin_transfer(&new_admin);
+
+    // Old admin loses mint privileges immediately on accept.
+    assert!(c.try_mint(&admin, &user, &100).is_err());
+    // New admin can still mint.
+    assert!(c.try_mint(&new_admin, &user, &500).is_ok());
+    assert_eq!(c.balance(&user), 500);
+}
+
+#[test]
+fn test_accept_expired_transfer_reverts() {
+    let (env, c) = setup();
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    c.initialize(&admin, &1_000);
+
+    // 5-minute acceptance window.
+    c.propose_admin_transfer(&admin, &new_admin, &300_u64);
+    assert_eq!(stored_pending_admin(&env), Some(new_admin.clone()));
+
+    // Advance the ledger clock past the acceptance window.
+    env.ledger().with_mut(|l| l.timestamp += 400);
+
+    assert!(c.try_accept_admin_transfer(&new_admin).is_err());
+    assert_eq!(stored_pending_admin(&env), None);
+    // Admin unchanged after an expired acceptance attempt.
+    assert_eq!(stored_admin(&env), admin);
+}
+
+#[test]
+fn test_accept_by_non_nominated_address_reverts() {
+    let (env, c) = setup();
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let intruder = Address::generate(&env);
+    c.initialize(&admin, &1_000);
+    c.propose_admin_transfer(&admin, &new_admin, &0_u64);
+
+    assert!(c.try_accept_admin_transfer(&intruder).is_err());
+    // Nomination remains in place for the real nominee.
+    assert_eq!(stored_pending_admin(&env), Some(new_admin.clone()));
+}
+
+#[test]
+fn test_accept_without_proposal_reverts() {
+    let (env, c) = setup();
+    let new_admin = Address::generate(&env);
+    c.initialize(&Address::generate(&env), &1_000);
+    assert!(c.try_accept_admin_transfer(&new_admin).is_err());
+}
+
+#[test]
+#[should_panic]
+fn test_propose_admin_transfer_zero_address_reverts() {
+    let (env, c) = setup();
+    let admin = Address::generate(&env);
+    let zero = Address::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
+    c.initialize(&admin, &1_000);
+    c.propose_admin_transfer(&admin, &zero, &0_u64);
+}
+
+#[test]
+#[should_panic]
+fn test_propose_admin_transfer_non_admin_reverts() {
+    let (env, c) = setup();
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    c.initialize(&admin, &1_000);
+    c.propose_admin_transfer(&non_admin, &new_admin, &0_u64);
+}
+
 // ---------------------------------------------------------------------------
 // SEC-013: Staking lock-bypass regression tests
 // ---------------------------------------------------------------------------

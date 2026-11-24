@@ -1,0 +1,234 @@
+{
+  "info": {
+    "_postman_id": "c3f1b2a4-7d6e-4f2a-9b1c-0a1b2c3d4e5f",
+    "name": "VoteChain API",
+    "description": "Importable Postman collection for the VoteChain public API.\n\nGenerated from `api/openapi.yml` (OpenAPI 3.1.0) — VoteChain API v1.0.0. The collection is version-pinned to that spec version; regenerate it whenever the spec changes.\n\n## Setup\n\n1. Import this file into Postman (File → Import).\n2. Adjust the `baseUrl` and `indexerUrl` collection variables for your environment (defaults: `http://localhost:3001` and `http://localhost:3000`).\n3. Adjust `proposalId` and `voterAddress` to real values before sending indexer requests.\n\n## Notes\n\n- Read-only (`GET`) endpoints require no authentication in the current release.\n- `POST /api/proposals/invalidate` is intended for internal use by the event indexer and should be restricted at the network/proxy layer. A future release may require an `Authorization: Bearer <token>` header on mutating endpoints — this collection ships a disabled `Authorization` header on that request for that case.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "version": {
+      "major": 1,
+      "minor": 0,
+      "patch": 0
+    }
+  },
+  "item": [
+    {
+      "name": "Proposals (backend)",
+      "description": "Governance proposal endpoints served by the Node.js backend (`/api/proposals`).",
+      "item": [
+        {
+          "name": "List proposals",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/proposals?limit=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "proposals"],
+              "query": [
+                {
+                  "key": "cursor",
+                  "value": "42",
+                  "description": "Last seen proposal ID (exclusive). Omit to fetch the first page. Pass the `next_cursor` value from the previous response to advance.",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "description": "Maximum number of proposals to return. Default 20, capped at 100."
+                },
+                {
+                  "key": "state",
+                  "value": "active",
+                  "description": "Filter proposals by lifecycle state: active, passed, rejected, executed, cancelled.",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Returns a paginated list of governance proposals. Results are cached for 30 seconds in Redis; the `X-Cache` response header is `HIT` or `MISS`."
+          },
+          "response": []
+        },
+        {
+          "name": "Get proposal details",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/proposals/{{proposalId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "proposals", "{{proposalId}}"]
+            },
+            "description": "Returns full details for a single governance proposal, including vote tallies. Response is cached for 10 seconds in Redis; the `X-Cache` response header is `HIT` or `MISS`."
+          },
+          "response": []
+        },
+        {
+          "name": "Invalidate proposal cache",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{apiKey}}",
+                "description": "Not required in the current release. Present (disabled) for the planned `Authorization: Bearer <token>` requirement on mutating endpoints.",
+                "disabled": true
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"{{proposalId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/proposals/invalidate",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "proposals", "invalidate"]
+            },
+            "description": "Instructs the backend to evict stale proposal data from Redis. Without a body (or with `id` omitted) it clears the proposal list cache entry; with `id` it clears both the list cache and the specific item cache.\n\nAccess control: this endpoint should be reachable only from internal services (e.g. the event indexer). Restrict access at the network or proxy layer."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Metrics (backend)",
+      "description": "Internal observability endpoints served by the Node.js backend.",
+      "item": [
+        {
+          "name": "Get Redis cache metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/metrics/cache",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "metrics", "cache"]
+            },
+            "description": "Returns in-memory hit/miss counters for the Redis proposal cache. Counters are reset when the process restarts."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Indexer",
+      "description": "Endpoints served by the Rust event indexer. Point `indexerUrl` at the indexer process (default `http://localhost:3000`).",
+      "item": [
+        {
+          "name": "List proposals (indexer)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{indexerUrl}}/proposals?offset=0&limit=50",
+              "host": ["{{indexerUrl}}"],
+              "path": ["proposals"],
+              "query": [
+                {
+                  "key": "offset",
+                  "value": "0",
+                  "description": "Skip this many proposals (pagination). Default 0."
+                },
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "Max results, capped at 50."
+                },
+                {
+                  "key": "state",
+                  "value": "active",
+                  "description": "Filter proposals by lifecycle state: active, passed, rejected, executed, cancelled.",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Returns a page of proposals sourced from the indexer database."
+          },
+          "response": []
+        },
+        {
+          "name": "Get full proposal details (indexer)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{indexerUrl}}/proposals/{{proposalId}}",
+              "host": ["{{indexerUrl}}"],
+              "path": ["proposals", "{{proposalId}}"]
+            },
+            "description": "Returns full proposal detail from the indexer database."
+          },
+          "response": []
+        },
+        {
+          "name": "List votes for a proposal (indexer)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{indexerUrl}}/proposals/{{proposalId}}/votes",
+              "host": ["{{indexerUrl}}"],
+              "path": ["proposals", "{{proposalId}}", "votes"]
+            },
+            "description": "Returns all vote records for the given proposal."
+          },
+          "response": []
+        },
+        {
+          "name": "Get voter vote history (indexer)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{indexerUrl}}/voters/{{voterAddress}}/votes",
+              "host": ["{{indexerUrl}}"],
+              "path": ["voters", "{{voterAddress}}", "votes"]
+            },
+            "description": "Returns all votes cast by a given Stellar address (G... format)."
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3001",
+      "type": "string",
+      "description": "Base URL of the Node.js backend."
+    },
+    {
+      "key": "indexerUrl",
+      "value": "http://localhost:3000",
+      "type": "string",
+      "description": "Base URL of the Rust event indexer."
+    },
+    {
+      "key": "proposalId",
+      "value": "42",
+      "type": "string",
+      "description": "Numeric proposal ID used in path parameters."
+    },
+    {
+      "key": "voterAddress",
+      "value": "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+      "type": "string",
+      "description": "Stellar account address (G... format) used in indexer path parameters."
+    },
+    {
+      "key": "apiKey",
+      "value": "",
+      "type": "string",
+      "description": "Optional Bearer token for future authenticated mutating endpoints."
+    }
+  ]
+}

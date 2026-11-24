@@ -23,6 +23,7 @@ export interface RawProposal {
   id: number;
   title: string;
   proposer: string;
+  description: string;
   votes_yes: number;
   votes_no: number;
   votes_abstain: number;
