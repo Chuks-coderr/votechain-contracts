@@ -30,6 +30,7 @@
  * endpoint. Cache invalidation is triggered by invalidateProposalCache(id?).
  */
 
+import { getConfig } from "../config";
 import { createClient, RedisClientType } from "redis";
 import { Request, Response, NextFunction } from "express";
 import { log } from "./requestTracing";
@@ -108,7 +109,7 @@ async function attemptConnect(url: string): Promise<void> {
  * Background reconnect attempts run with exponential backoff (max 5).
  */
 export async function connectRedis(
-  url = process.env.REDIS_URL ?? "redis://localhost:6379"
+  url = getConfig().redisUrl ?? "redis://localhost:6379"
 ): Promise<void> {
   try {
     await attemptConnect(url);
@@ -142,13 +143,11 @@ export function getCacheMetrics() {
 // ── TTL constants ──────────────────────────────────────────────────────────
 
 const TTL = {
-  PROPOSAL_LIST: parseInt(process.env.PROPOSAL_LIST_TTL ?? "30", 10),
-  PROPOSAL_ITEM: parseInt(process.env.PROPOSAL_ITEM_TTL ?? "10", 10),
+  PROPOSAL_LIST: getConfig().proposalListTtl,
+  PROPOSAL_ITEM: getConfig().proposalItemTtl,
 };
 
-export const LEADERBOARD_CACHE_TTL_SECONDS = Number(
-  process.env.LEADERBOARD_CACHE_TTL ?? 60,
-);
+export const LEADERBOARD_CACHE_TTL_SECONDS = getConfig().leaderboardCacheTtl;
 
 if (
   !Number.isSafeInteger(LEADERBOARD_CACHE_TTL_SECONDS) ||

@@ -17,6 +17,7 @@
  * on Stellar Soroban via RPC.
  */
 
+import { getConfig } from "../config";
 import {
   Contract,
   Networks,
@@ -343,9 +344,9 @@ export class ContractService {
 
 // Factory function to create ContractService from environment variables
 export function createContractServiceFromEnv(): ContractService {
-  const rpcUrl = process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";
-  const networkPassphrase = process.env.STELLAR_NETWORK_PASSPHRASE ?? Networks.TESTNET;
-  const contractId = process.env.GOVERNANCE_CONTRACT_ID ?? "";
+  const rpcUrl = getConfig().sorobanRpcUrl;
+  const networkPassphrase = getConfig().networkPassphrase;
+  const contractId = getConfig().governanceContractId;
 
   if (!contractId) {
     throw new Error("GOVERNANCE_CONTRACT_ID environment variable not set");
