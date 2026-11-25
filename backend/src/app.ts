@@ -25,6 +25,10 @@ import { metricsMiddleware, metricsHandler } from "./middleware/metrics";
 import { securityHeaders } from "./middleware/securityHeaders";
 import healthRoutes from "./routes/health";
 import proposalRoutes from "./routes/proposals";
+import csvRoutes from "./routes/csv";
+import simulateRoutes from "./routes/simulate";
+import analyticsRoutes from "./routes/analytics";
+import { startBucketRefresh } from "./services/analyticsBucketService";
 import leaderboardRoutes from "./routes/leaderboard";
 import apiKeysRoutes from "./routes/apiKeys";
 import adminAuditLogRoutes from "./routes/adminAuditLog";
@@ -91,8 +95,8 @@ const corsOptions: cors.CorsOptions = {
     }
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Request-Id"],
-  exposedHeaders: ["X-Request-Id", "X-Cache", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-RateLimit-Tier"],
+  allowedHeaders: ["Content-Type", "Authorization", "If-None-Match", "X-Request-Id"],
+  exposedHeaders: ["ETag", "X-Record-Count", "X-Truncated", "X-Request-Id", "X-Cache", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-RateLimit-Tier"],
   credentials: true,
   // Tells browsers to cache the preflight response for 10 minutes
   maxAge: 600,
@@ -156,6 +160,9 @@ app.use("/api", rateLimit);
 
 // ── Routes ─────────────────────────────────────────────────────────────────
 app.use("/api", proposalRoutes);
+app.use("/api", csvRoutes);
+app.use("/api", simulateRoutes);
+app.use("/api", analyticsRoutes);
 app.use("/api/leaderboard", leaderboardRoutes);
 app.use("/api", apiKeysRoutes);
 app.use("/api", adminAuditLogRoutes);
@@ -255,6 +262,7 @@ connectRedis(env.REDIS_URL).then(() => {
   server.listen(PORT, () =>
     console.log(`[server] listening on :${PORT}`)
   );
+  startBucketRefresh();
 });
 
 export default app;

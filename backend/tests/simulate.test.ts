@@ -31,6 +31,7 @@ vi.mock("../src/middleware/redisCache", () => ({
 }));
 
 // Import the simulate router (default export).
+import { estimateCastVoteFee } from "../src/services/feeEstimateService";
 import simulateRouter from "../src/routes/simulate";
 
 // Minimal Express app with just the simulate route mounted.
@@ -100,5 +101,33 @@ describe("POST /simulate — HTML tag validation (#320)", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("HTML tags");
+  });
+});
+
+describe("fee estimate (#523)", () => {
+  it("returns a best-effort range in the /simulate response", async () => {
+    const res = await request(app).post("/simulate").send({
+      token_supply: 100, votes_yes: 60, votes_no: 1, votes_abstain: 0, quorum: 10,
+    });
+    expect(res.body.fee_estimate).toEqual({
+      best_effort: true,
+      source: "fallback",
+      unit: "stroops",
+      min: expect.stringMatching(/^\d+$/),
+      max: expect.stringMatching(/^\d+$/),
+    });
+  });
+
+  it("derives the range from simulation and falls back on failure or timeout", async () => {
+    const params = { voter: "G", proposalId: BigInt(1), vote: "Yes" as const };
+    expect(await estimateCastVoteFee(params, async () => BigInt(1000))).toMatchObject({
+      source: "simulation", min: "1100", max: "1350",
+    });
+    expect(
+      await estimateCastVoteFee(params, async () => { throw new Error("rpc down"); }),
+    ).toMatchObject({ source: "fallback" });
+    expect(
+      await estimateCastVoteFee(params, () => new Promise(() => {}), 5),
+    ).toMatchObject({ source: "fallback" });
   });
 });
