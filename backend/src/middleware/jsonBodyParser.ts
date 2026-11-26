@@ -1,5 +1,6 @@
 import express from "express";
+import { getConfig } from "../config";
 
-export function jsonBodyParser(limit = process.env.JSON_BODY_LIMIT ?? "100kb") {
+export function jsonBodyParser(limit = getConfig().jsonBodyLimit) {
   return express.json({ limit });
 }

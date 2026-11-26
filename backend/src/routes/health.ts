@@ -14,16 +14,13 @@
 
 import { Pool } from "pg";
 import { Router, Request, Response } from "express";
+import { getConfig } from "../config";
 import { getRedis } from "../middleware/redisCache";
 import { log } from "../middleware/requestTracing";
 
 const { version } = require("../../package.json") as { version?: string };
 const router = Router();
-const timeoutMs = Number(process.env.HEALTH_CHECK_TIMEOUT_MS ?? 2_000);
-
-if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
-  throw new Error("HEALTH_CHECK_TIMEOUT_MS must be a positive integer.");
-}
+const timeoutMs = getConfig().healthCheckTimeoutMs;
 
 let dbPool: Pool | undefined;
 
@@ -54,7 +51,7 @@ async function checkComponent(
 }
 
 async function checkDatabase(): Promise<void> {
-  const connectionString = process.env.DATABASE_URL;
+  const connectionString = getConfig().databaseUrl;
   if (!connectionString) {
     throw new Error("DATABASE_URL is not configured.");
   }
@@ -78,7 +75,7 @@ async function checkRedis(): Promise<void> {
 }
 
 async function checkStellarRpc(): Promise<void> {
-  const rpcUrl = process.env.STELLAR_RPC_URL;
+  const rpcUrl = getConfig().stellarRpcUrl;
   if (!rpcUrl) {
     throw new Error("STELLAR_RPC_URL is not configured.");
   }

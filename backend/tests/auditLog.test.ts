@@ -34,6 +34,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 import jwt from "jsonwebtoken";
+import { resetConfigForTesting } from "../src/config";
 import type { Request, Response, NextFunction } from "express";
 
 // Mock Redis so the rate limiter degrades gracefully (allows all requests).
@@ -72,7 +73,7 @@ const OTHER_ADDRESS = "GVOTER9876543210";
 
 /** Signs a valid admin JWT for the test admin address. */
 function adminToken(): string {
-  return jwt.sign({ stellarAddress: ADMIN_ADDRESS }, JWT_SECRET);
+  return jwt.sign({ stellarAddress: ADMIN_ADDRESS }, JWT_SECRET, { expiresIn: 600 });
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +101,7 @@ beforeEach(() => {
   // Set the env vars that adminAuth reads.
   process.env.ADMIN_JWT_SECRET = JWT_SECRET;
   process.env.ADMIN_STELLAR_ADDRESS = ADMIN_ADDRESS;
+  resetConfigForTesting();
 });
 
 // ---------------------------------------------------------------------------
@@ -352,7 +354,7 @@ describe("GET /admin/audit-log — auth", () => {
   });
 
   it("returns 403 when the JWT payload has the wrong Stellar address", async () => {
-    const token = jwt.sign({ stellarAddress: "WRONG_ADDRESS" }, JWT_SECRET);
+    const token = jwt.sign({ stellarAddress: "WRONG_ADDRESS" }, JWT_SECRET, { expiresIn: 600 });
 
     const res = await request(authApp)
       .get("/admin/audit-log")

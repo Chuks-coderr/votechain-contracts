@@ -212,6 +212,18 @@ pub fn voting_extended(env: &Env, id: u64, old_end_time: u64, new_end_time: u64)
     );
 }
 
+/// Emits a `tlextend` event when an admin extends the timelock of a passed
+/// proposal via [`crate::GovernanceContract::extend_timelock`].
+///
+/// Topics: `("tlextend", id)`
+/// Data: `(old_execute_after: u64, new_execute_after: u64)`
+pub fn timelock_extended(env: &Env, id: u64, old_execute_after: u64, new_execute_after: u64) {
+    env.events().publish(
+        (symbol_short!("tlextend"), id),
+        (old_execute_after, new_execute_after),
+    );
+}
+
 /// Emits a `tmplreg` event when an admin registers a proposal template.
 ///
 /// Topics: `("tmplreg",)`

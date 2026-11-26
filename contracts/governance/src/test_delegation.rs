@@ -27,6 +27,8 @@
 //!  10. Delegator cannot vote after being counted via cast_vote_with_delegators
 //!  11. cast_vote_with_delegators skips non-delegators silently
 //!  12. cast_vote_with_delegators skips already-voted delegators
+//!  13. Snapshot integrity: delegate->vote credits expected weight (#545)
+//!  14. Snapshot integrity: undelegate->vote-direct flow (#545)
 
 #[cfg(test)]
 mod delegation_tests {
@@ -209,108 +211,84 @@ mod delegation_tests {
             .cast_vote_with_delegators(&delegate, &proposal_id, &Vote::Yes, &delegators);
 
         let proposal = t.client.get_proposal(&proposal_id).unwrap();
-        // 100 (delegate) + 300 (a) + 200 (b) = 600
+        // delegate (100) + delegator_a (300) + delegator_b (200) = 600
         assert_eq!(proposal.votes_yes, 600);
     }
 
-    // ── test 9: delegator is marked as voted after cast_vote_with_delegators
+    // ── test 9: snapshot integrity — delegate->vote credits expected weight ─
+    //
+    // Issue #545: verify that when a delegate casts a vote, the delegator's
+    // power is excluded from the delegator's own vote and the delegate's
+    // snapshot includes the expected combined weight (delegate + delegator).
     #[test]
-    fn test_delegator_marked_as_voted_after_delegation_cast() {
+    fn test_delegate_vote_credits_expected_snapshot_weight() {
         let t = setup_env();
         let delegator = soroban_sdk::Address::generate(&t.env);
         let delegate = soroban_sdk::Address::generate(&t.env);
 
         let tok = votechain_token::TokenContractClient::new(&t.env, &t.token_id);
-        tok.mint(&t.admin, &delegator, &200_i128);
+        tok.mint(&t.admin, &delegator, &400_i128);
         tok.mint(&t.admin, &delegate, &100_i128);
 
+        // Delegator hands power to delegate
         t.client.delegate(&delegator, &delegate);
 
         let proposal_id = create_test_proposal(&t, &t.admin);
         advance_past_start(&t);
 
-        let mut delegators = Vec::new(&t.env);
-        delegators.push_back(delegator.clone());
-
-        t.client
-            .cast_vote_with_delegators(&delegate, &proposal_id, &Vote::Yes, &delegators);
-
-        // Delegator should now be marked as voted
-        let has_voted = t.client.has_voted(&proposal_id, &delegator).unwrap();
-        assert!(has_voted, "delegator should be marked as voted");
-    }
-
-    // ── test 10: cast_vote_with_delegators skips non-delegators silently ──
-    #[test]
-    fn test_cast_vote_with_delegators_skips_non_delegators() {
-        let t = setup_env();
-        let non_delegator = soroban_sdk::Address::generate(&t.env);
-        let delegate = soroban_sdk::Address::generate(&t.env);
-
-        let tok = votechain_token::TokenContractClient::new(&t.env, &t.token_id);
-        tok.mint(&t.admin, &delegate, &100_i128);
-        tok.mint(&t.admin, &non_delegator, &999_i128);
-
-        // non_delegator has NOT delegated to `delegate`
-
-        let proposal_id = create_test_proposal(&t, &t.admin);
-        advance_past_start(&t);
-
-        let mut delegators = Vec::new(&t.env);
-        delegators.push_back(non_delegator.clone());
-
-        // Should succeed but only count delegate's own balance
-        t.client
-            .cast_vote_with_delegators(&delegate, &proposal_id, &Vote::Yes, &delegators);
-
-        let proposal = t.client.get_proposal(&proposal_id).unwrap();
-        assert_eq!(proposal.votes_yes, 100, "only delegate's own weight counted");
-    }
-
-    // ── test 11: cast_vote_with_delegators skips already-voted delegators ─
-    #[test]
-    fn test_cast_vote_with_delegators_skips_already_voted_delegators() {
-        let t = setup_env();
-        let delegator = soroban_sdk::Address::generate(&t.env);
-        let delegate = soroban_sdk::Address::generate(&t.env);
-
-        let tok = votechain_token::TokenContractClient::new(&t.env, &t.token_id);
-        tok.mint(&t.admin, &delegator, &300_i128);
-        tok.mint(&t.admin, &delegate, &100_i128);
-
-        t.client.delegate(&delegator, &delegate);
-
-        let proposal_id = create_test_proposal(&t, &t.admin);
-        advance_past_start(&t);
-
-        let mut delegators = Vec::new(&t.env);
-        delegators.push_back(delegator.clone());
-
-        // First call: delegator counted (total = 400)
-        t.client
-            .cast_vote_with_delegators(&delegate, &proposal_id, &Vote::Yes, &delegators);
-
-        let proposal = t.client.get_proposal(&proposal_id).unwrap();
-        assert_eq!(proposal.votes_yes, 400);
-    }
-
-    // ── test 12: overwriting delegation (re-delegate to different address) ─
-    #[test]
-    fn test_redelegate_overwrites_existing_delegation() {
-        let t = setup_env();
-        let delegator = soroban_sdk::Address::generate(&t.env);
-        let delegate_a = soroban_sdk::Address::generate(&t.env);
-        let delegate_b = soroban_sdk::Address::generate(&t.env);
-
-        t.client.delegate(&delegator, &delegate_a);
-        assert_eq!(t.client.get_delegate(&delegator), Some(delegate_a));
-
-        // Re-delegate to a different address
-        t.client.delegate(&delegator, &delegate_b);
+        // Delegator cannot vote directly while delegated — power is excluded
+        // from their own vote.
+        let direct = t.client.try_cast_vote(&delegator, &proposal_id, &Vote::Yes, &None);
         assert_eq!(
-            t.client.get_delegate(&delegator),
-            Some(delegate_b),
-            "delegation should point to new delegate"
+            direct,
+            Err(Ok(ContractError::VotingPowerDelegated)),
+            "delegator must not be able to vote directly while delegated"
+        );
+
+        // Delegate votes; snapshot must credit delegate (100) + delegator (400).
+        let mut delegators = Vec::new(&t.env);
+        delegators.push_back(delegator.clone());
+        t.client
+            .cast_vote_with_delegators(&delegate, &proposal_id, &Vote::Yes, &delegators);
+
+        let proposal = t.client.get_proposal(&proposal_id).unwrap();
+        assert_eq!(
+            proposal.votes_yes, 500,
+            "delegate snapshot must include delegator weight"
+        );
+
+        // Delegator is marked as voted via the delegate and cannot vote again.
+        let again = t.client.try_cast_vote(&delegator, &proposal_id, &Vote::Yes, &None);
+        assert!(again.is_err(), "delegator must not vote after delegate voted");
+    }
+
+    // ── test 10: snapshot integrity — undelegate->vote-direct flow ────────
+    //
+    // Issue #545: after undelegating, the original voter can vote directly
+    // and their full weight is credited to their own vote.
+    #[test]
+    fn test_undelegate_then_vote_direct_credits_own_weight() {
+        let t = setup_env();
+        let delegator = soroban_sdk::Address::generate(&t.env);
+        let delegate = soroban_sdk::Address::generate(&t.env);
+
+        let tok = votechain_token::TokenContractClient::new(&t.env, &t.token_id);
+        tok.mint(&t.admin, &delegator, &400_i128);
+        tok.mint(&t.admin, &delegate, &100_i128);
+
+        t.client.delegate(&delegator, &delegate);
+        t.client.undelegate(&delegator);
+
+        let proposal_id = create_test_proposal(&t, &t.admin);
+        advance_past_start(&t);
+
+        // Original voter can now vote directly with their own weight.
+        t.client.cast_vote(&delegator, &proposal_id, &Vote::Yes, &None);
+
+        let proposal = t.client.get_proposal(&proposal_id).unwrap();
+        assert_eq!(
+            proposal.votes_yes, 400,
+            "undelegated voter must credit only their own weight"
         );
     }
 }

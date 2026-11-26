@@ -17,21 +17,24 @@ import cors from "cors";
 import helmet from "helmet";
 import http from "http";
 import { connectRedis, getRedis } from "./middleware/redisCache";
-import { requestTracing } from "./middleware/requestTracing";
-import { requestTimeout } from "./middleware/requestTimeout";
-import { compression } from "./middleware/compression";
-import { loadConfig } from "./config";
+import { ConfigError, getConfig, publicConfig, type Config } from "./config";
+import { log, requestTracing } from "./middleware/requestTracing";
 import { apiKeyAuth } from "./middleware/apiKeyAuth";
 import { rateLimit } from "./middleware/rateLimit";
 import { jsonBodyParser } from "./middleware/jsonBodyParser";
 import { metricsMiddleware, metricsHandler } from "./middleware/metrics";
 import { securityHeaders } from "./middleware/securityHeaders";
+import { requestTimeout } from "./middleware/requestTimeout";
 import healthRoutes from "./routes/health";
 import proposalRoutes from "./routes/proposals";
+import csvRoutes from "./routes/csv";
+import simulateRoutes from "./routes/simulate";
+import analyticsRoutes from "./routes/analytics";
+import { startBucketRefresh } from "./services/analyticsBucketService";
 import leaderboardRoutes from "./routes/leaderboard";
 import apiKeysRoutes from "./routes/apiKeys";
 import adminAuditLogRoutes from "./routes/adminAuditLog";
-import authRoutes from "./routes/auth";
+import adminTokenRoutes from "./routes/adminToken";
 import cspReportRoutes from "./routes/cspReport";
 import {
   notFoundHandler,
@@ -39,14 +42,31 @@ import {
 } from "./middleware/errorHandler";
 
 // ---------------------------------------------------------------------------
-// Configuration (loaded once at startup)
+// Configuration
 // ---------------------------------------------------------------------------
 
-const config = loadConfig();
+function loadStartupConfig(): Config & { redisUrl: string } {
+  try {
+    const config = getConfig();
+    if (!config.redisUrl) throw new ConfigError("REDIS_URL is required.");
+    return { ...config, redisUrl: config.redisUrl };
+  } catch (err) {
+    if (!(err instanceof ConfigError)) throw err;
+    console.error(
+      `[startup] Invalid configuration: ${err.message} See .env.example for reference.`
+    );
+    process.exit(1);
+  }
+}
+
+const env = loadStartupConfig();
+log("info", "configuration loaded", publicConfig(env));
 
 // ---------------------------------------------------------------------------
 // CORS configuration (#32)
 // ---------------------------------------------------------------------------
+
+const allowedOrigins = env.allowedOrigins;
 
 const corsOptions: cors.CorsOptions = {
   origin(origin, callback) {
@@ -58,8 +78,8 @@ const corsOptions: cors.CorsOptions = {
     }
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Request-Id"],
-  exposedHeaders: ["X-Request-Id", "X-Cache", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-RateLimit-Tier"],
+  allowedHeaders: ["Content-Type", "Authorization", "If-None-Match", "X-Request-Id"],
+  exposedHeaders: ["ETag", "X-Record-Count", "X-Truncated", "X-Request-Id", "X-Cache", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-RateLimit-Tier"],
   credentials: true,
   // Tells browsers to cache the preflight response for 10 minutes
   maxAge: 600,
@@ -70,6 +90,7 @@ const corsOptions: cors.CorsOptions = {
 // ---------------------------------------------------------------------------
 
 const app = express();
+app.set("trust proxy", env.trustProxy);
 
 // Security headers — must come before routes.
 // helmet()'s defaults don't match our baseline hardening requirements
@@ -98,6 +119,11 @@ app.use(cors(corsOptions));
 
 app.use(requestTracing);
 app.use(metricsMiddleware);
+// CSP violation reports forwarded by Nginx (SEC-012) — mounted before auth
+// since the browser-originated report never carries an API key, and before
+// the global JSON parser so the route's smaller body cap applies (#516).
+app.use("/", cspReportRoutes);
+
 app.use(jsonBodyParser());
 
 // Health, readiness and metrics — mounted BEFORE rate-limiting and auth so
@@ -105,17 +131,6 @@ app.use(jsonBodyParser());
 // credentials.
 app.get("/metrics", metricsHandler);
 app.use("/", healthRoutes);
-
-// CSP violation reports forwarded by Nginx (SEC-012) — mounted before auth
-// since the browser-originated report never carries an API key.
-app.use("/", cspReportRoutes);
-
-// ── Admin auth token issuance & refresh ────────────────────────────────
-//
-// Mounted BEFORE apiKeyAuth/rateLimit so a client can obtain a JWT without
-// already holding an API key. Login/refresh validate the admin address and
-// issue short-lived access tokens + refreshable refresh tokens.
-app.use("/api", authRoutes);
 
 // ── API key authentication & tiered rate limiting ──────────────────────────
 //
@@ -125,6 +140,7 @@ app.use("/api", authRoutes);
 //
 // Both are async middleware applied to all /api routes.  Health routes are
 // intentionally excluded (mounted above, before this block).
+app.use("/api", requestTimeout());
 app.use("/api", apiKeyAuth);
 app.use("/api", rateLimit);
 app.use("/api", requestTimeout);
@@ -132,15 +148,21 @@ app.use("/api", compression);
 
 // ── Routes ─────────────────────────────────────────────────────────────────
 app.use("/api", proposalRoutes);
+app.use("/api", csvRoutes);
+app.use("/api", simulateRoutes);
+app.use("/api", analyticsRoutes);
 app.use("/api/leaderboard", leaderboardRoutes);
 app.use("/api", apiKeysRoutes);
 app.use("/api", adminAuditLogRoutes);
+app.use("/api", adminTokenRoutes);
 
 // Catch unmatched routes — must come after all real route registrations.
 app.use(notFoundHandler);
 
 // Global error handler — must be the very last middleware registered.
 app.use(globalErrorHandler);
+
+const PORT = env.port;
 
 // ---------------------------------------------------------------------------
 // Graceful shutdown (#231)
@@ -223,12 +245,13 @@ function registerGracefulShutdown(server: http.Server): void {
 
 // connectRedis now degrades gracefully on failure (#38) — the server always
 // starts regardless of whether Redis is reachable.
-connectRedis(config.REDIS_URL).then(() => {
+connectRedis(env.redisUrl).then(() => {
   const server = http.createServer(app);
   registerGracefulShutdown(server);
   server.listen(config.PORT, () =>
     console.log(`[server] listening on :${config.PORT}`)
   );
+  startBucketRefresh();
 });
 
 export default app;
