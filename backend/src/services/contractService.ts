@@ -20,7 +20,7 @@
 import {
   Contract,
   Networks,
-  SorobanRpc,
+  rpc as SorobanRpc,
   TransactionBuilder,
   nativeToScVal,
   scValToNative,
@@ -248,6 +248,26 @@ export class ContractService {
       nativeToScVal(params.durationSeconds, { type: "u64" })
     );
     return this.invoke(signerKeypair, op, (native) => BigInt(native as string | number | bigint));
+  }
+
+  /** Minimum resource fee (stroops) for cast_vote; simulates only, never submits. */
+  async estimateCastVoteResourceFee(
+    voter: string,
+    proposalId: bigint,
+    vote: "Yes" | "No" | "Abstain"
+  ): Promise<bigint> {
+    const op = this.contract.call(
+      "cast_vote",
+      nativeToScVal(voter, { type: "address" }),
+      nativeToScVal(proposalId, { type: "u64" }),
+      voteToScVal(vote),
+      xdr.ScVal.scvVoid()
+    );
+    const { simulated } = await this.buildAndSimulate(voter, op);
+    if (!SorobanRpc.Api.isSimulationSuccess(simulated)) {
+      throw new Error("Contract simulation did not succeed");
+    }
+    return BigInt(simulated.minResourceFee);
   }
 
   async castVote(

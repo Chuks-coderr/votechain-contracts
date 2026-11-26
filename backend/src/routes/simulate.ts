@@ -31,6 +31,13 @@
  */
 
 import { Router, Request, Response } from "express";
+import { StrKey } from "@stellar/stellar-sdk";
+import {
+  estimateCastVoteFee,
+  type FeeEstimate,
+  type FeeEstimateParams,
+  type VoteChoice,
+} from "../services/feeEstimateService";
 import { getRedis } from "../middleware/redisCache";
 
 const router = Router();
@@ -217,6 +224,24 @@ function evaluate(req: SimulateRequest): SimulateResponse {
 // ---------------------------------------------------------------------------
 
 /**
+ * Optional cast_vote details (`voter`, `proposal_id`, `vote`) for the fee
+ * estimate. Returns null when absent or unusable (a static range is used).
+ */
+function parseFeeParams(body: Record<string, unknown>): FeeEstimateParams | null {
+  const { voter, proposal_id, vote } = body;
+  if (
+    typeof voter !== "string" ||
+    !StrKey.isValidEd25519PublicKey(voter) ||
+    !Number.isSafeInteger(proposal_id) ||
+    (proposal_id as number) < 0 ||
+    !["Yes", "No", "Abstain"].includes(vote as string)
+  ) {
+    return null;
+  }
+  return { voter, proposalId: BigInt(proposal_id as number), vote: vote as VoteChoice };
+}
+
+/**
  * POST /simulate
  *
  * Stateless proposal simulation endpoint.  Accepts hypothetical vote counts
@@ -242,17 +267,25 @@ function evaluate(req: SimulateRequest): SimulateResponse {
  *   "total_votes": 7500000,
  *   "quorum_met": true,
  *   "majority_met": true,
- *   "margin": 5000000
+ *   "margin": 5000000,
+ *   "fee_estimate": {
+ *     "best_effort": true, "source": "fallback", "unit": "stroops",
+ *     "min": "50000", "max": "1000000"
+ *   }
  * }
  */
-router.post("/simulate", simulateRateLimit, (req: Request, res: Response) => {
+router.post("/simulate", simulateRateLimit, async (req: Request, res: Response) => {
   const parsed = parseBody(req.body);
 
   if (typeof parsed === "string") {
     return res.status(400).json({ error: parsed });
   }
 
-  const result = evaluate(parsed);
+  const fee_estimate = await estimateCastVoteFee(parseFeeParams(req.body));
+  const result: SimulateResponse & { fee_estimate: FeeEstimate } = {
+    ...evaluate(parsed),
+    fee_estimate,
+  };
   return res.status(200).json(result);
 });
 
