@@ -106,6 +106,19 @@ interface SimulateRequest {
 }
 
 /**
+ * Best-effort fee/gas estimate for the simulated proposal transaction.
+ *
+ * @property min_fee_xlm - Minimum estimated fee in XLM (base cost).
+ * @property max_fee_xlm - Maximum estimated fee in XLM (3× the minimum).
+ * @property note        - Always "best-effort estimate only".
+ */
+interface FeeEstimate {
+  min_fee_xlm: number;
+  max_fee_xlm: number;
+  note: string;
+}
+
+/**
  * Structured outcome returned by POST /simulate.
  *
  * @property passed       - Whether the proposal would pass under the given inputs.
@@ -113,6 +126,7 @@ interface SimulateRequest {
  * @property quorum_met   - Whether total_votes >= quorum.
  * @property majority_met - Whether votes_yes > votes_no.
  * @property margin       - Difference between yes and no votes (signed).
+ * @property fee_estimate - Best-effort fee estimate for the transaction.
  */
 interface SimulateResponse {
   passed: boolean;
@@ -120,6 +134,7 @@ interface SimulateResponse {
   quorum_met: boolean;
   majority_met: boolean;
   margin: number;
+  fee_estimate: FeeEstimate;
 }
 
 // ---------------------------------------------------------------------------
@@ -206,8 +221,10 @@ function parseBody(body: unknown): SimulateRequest | string {
  *   majority_met = votes_yes > votes_no
  *   passed      = quorum_met AND majority_met
  *
+ * Also computes a best-effort fee estimate based on transaction complexity.
+ *
  * @param req - Validated simulation parameters.
- * @returns Structured outcome object.
+ * @returns Structured outcome object including fee_estimate.
  */
 function evaluate(req: SimulateRequest): SimulateResponse {
   const total_votes = req.votes_yes + req.votes_no + req.votes_abstain;
@@ -216,7 +233,19 @@ function evaluate(req: SimulateRequest): SimulateResponse {
   const passed = quorum_met && majority_met;
   const margin = req.votes_yes - req.votes_no;
 
-  return { passed, total_votes, quorum_met, majority_met, margin };
+  // Best-effort fee estimate (#523)
+  // base_fee = 0.00001 XLM (100 stroops)
+  const base_fee = 0.00001;
+  const multiplier = Math.min(1 + total_votes / 1_000_000, 10);
+  const min_fee_xlm = base_fee * multiplier;
+  const max_fee_xlm = min_fee_xlm * 3;
+  const fee_estimate: FeeEstimate = {
+    min_fee_xlm,
+    max_fee_xlm,
+    note: "best-effort estimate only",
+  };
+
+  return { passed, total_votes, quorum_met, majority_met, margin, fee_estimate };
 }
 
 // ---------------------------------------------------------------------------

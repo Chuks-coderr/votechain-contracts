@@ -16,6 +16,7 @@ import { Router, Request, Response } from "express";
 import { getGovernanceAnalytics } from "../services/analyticsService";
 import { getAnalyticsDb, readBuckets } from "../services/analyticsBucketService";
 import { getRedis } from "../middleware/redisCache";
+import { aggregateIntoBuckets, BucketGranularity } from "../services/analyticsAggregation";
 
 const router = Router();
 

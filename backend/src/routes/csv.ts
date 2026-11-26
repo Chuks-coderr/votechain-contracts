@@ -69,8 +69,6 @@ export async function sendCsv<T>(
   } else {
     res.setHeader("Trailer", "X-Record-Count, X-Truncated");
   }
-  res.setHeader("Content-Type", "text/csv; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
 
   const toCsv = new Transform({
     writableObjectMode: true,

@@ -76,3 +76,18 @@ fuzz/artifacts/
 *.tfstate.backup
 .terraform/
 .terraform.lock.hcl
+
+# Test snapshots (vitest/jest)
+**/__snapshots__/
+**/*.snap
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Local env overrides
+.env.local
+.env.*.local
+
+# Lock files (backend managed separately)
+backend/package-lock.json
+frontend/package-lock.json
