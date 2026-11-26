@@ -125,7 +125,7 @@ router.get("/proposals", proposalEtag, cacheProposalList, async (req: Request, r
     // Use a funded account to simulate read calls.
     // In production, this could be a dedicated read-only account.
     // For now, use the admin account or any funded account.
-    const readAs = process.env.READ_ACCOUNT ?? process.env.SOROBAN_ACCOUNT ?? "";
+    const readAs = getConfig().readAccount;
     if (!readAs) {
       return res.status(500).json({ error: "READ_ACCOUNT or SOROBAN_ACCOUNT not configured for contract reads" });
     }
@@ -182,7 +182,7 @@ router.get("/proposals/:id", proposalEtag, cacheProposalItem, async (req: Reques
     const { id } = req.params;
     const proposalId = BigInt(id);
 
-    const readAs = process.env.READ_ACCOUNT ?? process.env.SOROBAN_ACCOUNT ?? "";
+    const readAs = getConfig().readAccount;
     if (!readAs) {
       return res.status(500).json({ error: "READ_ACCOUNT or SOROBAN_ACCOUNT not configured for contract reads" });
     }
@@ -228,7 +228,7 @@ router.post("/proposals", async (req: Request, res: Response) => {
     const service = getContractService();
 
     // Use proposer from request or default to admin account
-    const proposerAddress = proposer ?? process.env.SOROBAN_ACCOUNT ?? "";
+    const proposerAddress = proposer ?? getConfig().sorobanAccount;
     if (!proposerAddress) {
       return res.status(500).json({ error: "Proposer address not provided and SOROBAN_ACCOUNT not configured" });
     }
@@ -238,7 +238,7 @@ router.post("/proposals", async (req: Request, res: Response) => {
     // secret key to sign. This is a simplified implementation for the MVP.
     // In production, the frontend would build and sign the transaction, then
     // submit the signed XDR to the backend or directly to the network.
-    const proposerSecret = process.env.PROPOSER_SECRET_KEY ?? process.env.SOROBAN_SECRET_KEY ?? "";
+    const proposerSecret = getConfig().proposerSecret;
     if (!proposerSecret) {
       return res.status(500).json({ error: "Proposer secret key not configured (PROPOSER_SECRET_KEY or SOROBAN_SECRET_KEY)" });
     }
@@ -274,7 +274,7 @@ router.post("/proposals/:id/finalize", async (req: Request, res: Response) => {
     const service = getContractService();
 
     // Anyone can call finalize; use a funded account to pay fees
-    const finalizerSecret = process.env.FINALIZER_SECRET_KEY ?? process.env.SOROBAN_SECRET_KEY ?? "";
+    const finalizerSecret = getConfig().finalizerSecret;
     if (!finalizerSecret) {
       return res.status(500).json({ error: "Finalizer secret key not configured" });
     }
@@ -306,7 +306,7 @@ router.post("/proposals/:id/execute", adminAuth, async (req: Request, res: Respo
     const service = getContractService();
 
     // Admin must sign the execution
-    const adminSecret = process.env.ADMIN_SECRET_KEY ?? process.env.SOROBAN_SECRET_KEY ?? "";
+    const adminSecret = getConfig().adminSecret;
     if (!adminSecret) {
       return res.status(500).json({ error: "Admin secret key not configured" });
     }
@@ -353,7 +353,7 @@ router.get(
       const service = getContractService();
       const { address } = req.params;
 
-      const readAs = process.env.READ_ACCOUNT ?? process.env.SOROBAN_ACCOUNT ?? "";
+      const readAs = getConfig().readAccount;
       if (!readAs) {
         return res.status(500).json({ error: "READ_ACCOUNT or SOROBAN_ACCOUNT not configured for contract reads" });
       }

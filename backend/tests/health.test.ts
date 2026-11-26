@@ -1,3 +1,4 @@
+import { resetConfigForTesting } from "../src/config";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
@@ -25,6 +26,7 @@ describe("dependency health checks", () => {
   beforeEach(() => {
     vi.stubEnv("DATABASE_URL", "postgres://localhost/test");
     vi.stubEnv("STELLAR_RPC_URL", "http://stellar-rpc.test");
+    resetConfigForTesting();
     healthMocks.dbQuery.mockReset().mockResolvedValue({ rows: [{ "?column?": 1 }] });
     healthMocks.redisPing.mockReset().mockResolvedValue("PONG");
     vi.stubGlobal(

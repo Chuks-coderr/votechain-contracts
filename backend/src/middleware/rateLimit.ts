@@ -37,6 +37,7 @@
  */
 
 import { Request, Response, NextFunction } from "express";
+import { getConfig } from "../config";
 import { getRedis } from "./redisCache";
 import { suspendApiKey } from "../services/apiKeyService";
 import { log } from "./requestTracing";
@@ -47,12 +48,12 @@ const WINDOW_SECONDS = 60;
 
 const LIMITS = {
   anon: {
-    read: Number(process.env.ANON_READ_LIMIT ?? 100),
-    write: Number(process.env.ANON_WRITE_LIMIT ?? 10),
+    read: getConfig().anonReadLimit,
+    write: getConfig().anonWriteLimit,
   },
   api_key: {
-    read: Number(process.env.API_KEY_READ_LIMIT ?? 1000),
-    write: Number(process.env.API_KEY_WRITE_LIMIT ?? 100),
+    read: getConfig().apiKeyReadLimit,
+    write: getConfig().apiKeyWriteLimit,
   },
 } as const;
 
@@ -60,9 +61,7 @@ const LIMITS = {
  * Combined burst threshold above which a key is auto-suspended.
  * Default: 1500 req/min (50 % above the 1000-read limit).
  */
-const ABUSE_BURST_THRESHOLD = Number(
-  process.env.ABUSE_BURST_THRESHOLD ?? 1500
-);
+const ABUSE_BURST_THRESHOLD = getConfig().abuseBurstThreshold;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
