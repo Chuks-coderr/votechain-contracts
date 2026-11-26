@@ -25,7 +25,7 @@ import {
   getCacheMetrics,
   invalidateProposalCache,
 } from "../middleware/redisCache";
-import { getConfig } from "../config";
+import { proposalEtag } from "../middleware/proposalEtag";
 import { adminAuth } from "../middleware/adminAuth";
 import { validateAddressParam } from "../middleware/validation";
 import { ContractService, createContractServiceFromEnv, type Proposal, type ProposalState } from "../services/contractService";
@@ -90,7 +90,7 @@ function transformProposal(p: Proposal): Record<string, unknown> {
 
 // GET /proposals — cached 30 s
 // Supports ?state= for state filtering, ?cursor= and ?limit= for pagination.
-router.get("/proposals", cacheProposalList, async (req: Request, res: Response) => {
+router.get("/proposals", proposalEtag, cacheProposalList, async (req: Request, res: Response) => {
   try {
     const service = getContractService();
 
@@ -176,7 +176,7 @@ router.get("/proposals", cacheProposalList, async (req: Request, res: Response) 
 });
 
 // GET /proposals/:id — cached 10 s
-router.get("/proposals/:id", cacheProposalItem, async (req: Request, res: Response) => {
+router.get("/proposals/:id", proposalEtag, cacheProposalItem, async (req: Request, res: Response) => {
   try {
     const service = getContractService();
     const { id } = req.params;

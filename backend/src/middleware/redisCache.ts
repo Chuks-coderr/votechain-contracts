@@ -202,7 +202,8 @@ function cacheMiddleware(keyFn: (req: Request) => string, ttl: number) {
     // Intercept res.json to store the response in Redis
     const originalJson = res.json.bind(res);
     res.json = (body: unknown) => {
-      if (isRedisReady() && redis) {
+      // Never cache errors: a hit would replay them with status 200.
+      if (res.statusCode === 200 && isRedisReady() && redis) {
         const serialized = JSON.stringify(body);
         redis.setEx(key, ttl, serialized).catch((err) =>
           log("error", "redis setEx error", { error: String(err) })
