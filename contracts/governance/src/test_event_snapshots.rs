@@ -31,9 +31,11 @@
 //! | `vote_cast`              | `"vote"`     | `test_event_snapshot_vote_cast`               |
 //! | `proposal_finalised`     | `"final"`    | `test_event_snapshot_proposal_finalised`      |
 //! | `proposal_executed`      | `"executed"` | `test_event_snapshot_proposal_executed`       |
+//! | `parameter-change execute` | `"executed"` | `test_event_snapshot_parameter_change_execute` |
 //! | `proposal_cancelled`     | `"cancelled"`| `test_event_snapshot_proposal_cancelled`      |
 //! | `quorum_updated`         | `"qupdate"`  | `test_event_snapshot_quorum_updated`          |
 //! | `admin_transferred`      | `"admxfer"`  | `test_event_snapshot_admin_transferred`       |
+//! | `admin_parameter_override` | `"paramoveride"` | `test_event_snapshot_admin_parameter_override` |
 //! | `contract_paused`        | `"paused"`   | `test_event_snapshot_contract_paused`         |
 //! | `contract_unpaused`      | `"unpaused"` | `test_event_snapshot_contract_unpaused`       |
 //! | `admin_transfer_proposed`| `"admprop"`  | `test_event_snapshot_admin_transfer_proposed` |
@@ -201,6 +203,40 @@ fn test_event_snapshot_proposal_executed() {
     );
 }
 
+/// Parameter-change `proposal_executed` — topics: `("executed", id)`, data: `()`
+#[test]
+fn test_event_snapshot_parameter_change_execute() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let proposer = Address::generate(&env);
+    let token = snap_token(&env, &admin);
+    let c = snap_gov(&env, &admin, &token);
+    let pid = c.create_parameter_change_proposal(
+        &proposer,
+        &String::from_str(&env, "Parameter change proposal"),
+        &String::from_str(&env, "Verifying parameter-change execute event"),
+        &100_i128,
+        &3600_u64,
+        &ConfigKey::MinDuration,
+        &180_u64,
+    );
+    votechain_token::TokenContractClient::new(&env, &token).mint(&admin, &proposer, &500_000);
+    c.cast_vote(&proposer, &pid, &Vote::Yes, &None);
+    env.ledger().with_mut(|l| l.timestamp += 3601);
+    c.finalise(&pid);
+    env.events().all();
+    c.execute(&admin, &pid);
+
+    let events = env.events().all();
+    assert!(
+        events.iter().any(|(_, topics, _)| {
+            topics == (symbol_short!("executed"), pid).into_val(&env)
+        }),
+        "expected 'executed' event with parameter-change proposal id"
+    );
+}
+
 /// `proposal_cancelled` — topics: `("cancelled", id)`, data: `()`
 #[test]
 fn test_event_snapshot_proposal_cancelled() {
@@ -270,6 +306,35 @@ fn test_event_snapshot_admin_transferred() {
                     .unwrap_or(false)
         }),
         "expected 'admxfer' event with (old_admin, new_admin)"
+    );
+}
+
+/// `admin_parameter_override` — topics: `("paramoveride",)`,
+/// data: `(admin: Address, config_key: ConfigKey, new_value: u64)`
+#[test]
+fn test_event_snapshot_admin_parameter_override() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let token = snap_token(&env, &admin);
+    let c = snap_gov(&env, &admin, &token);
+    env.events().all();
+    c.execute_parameter_change_override(&admin, &ConfigKey::MinProposalBalance, &500_000_u64);
+
+    let events = env.events().all();
+    assert!(
+        events.iter().any(|(_, topics, data)| {
+            topics == (symbol_short!("paramoveride"),).into_val(&env)
+                && <(Address, ConfigKey, u64)>::try_from_val(&env, &data)
+                    .ok()
+                    .map(|(event_admin, key, value)| {
+                        event_admin == admin
+                            && key == ConfigKey::MinProposalBalance
+                            && value == 500_000_u64
+                    })
+                    .unwrap_or(false)
+        }),
+        "expected 'paramoveride' event with (admin, config_key, new_value)"
     );
 }
 

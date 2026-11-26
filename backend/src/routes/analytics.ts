@@ -14,7 +14,9 @@
 
 import { Router, Request, Response } from "express";
 import { getGovernanceAnalytics } from "../services/analyticsService";
+import { getAnalyticsDb, readBuckets } from "../services/analyticsBucketService";
 import { getRedis } from "../middleware/redisCache";
+import { aggregateIntoBuckets, BucketGranularity } from "../services/analyticsAggregation";
 
 const router = Router();
 
@@ -33,6 +35,30 @@ router.get("/governance/analytics", async (_req: Request, res: Response) => {
     return res.json(analytics);
   } catch (error) {
     console.error("[Analytics] Error computing governance analytics:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+/**
+ * GET /analytics?granularity=hour|day&limit=N
+ *
+ * Precomputed, UTC-aligned proposal and vote counts (#524).
+ */
+router.get("/analytics", async (req: Request, res: Response) => {
+  const granularity = req.query.granularity ?? "day";
+  if (granularity !== "hour" && granularity !== "day") {
+    return res.status(400).json({ error: "granularity must be 'hour' or 'day'" });
+  }
+  const limit = Number(req.query.limit ?? 30);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+    return res.status(400).json({ error: "limit must be an integer from 1 to 1000" });
+  }
+  const db = getAnalyticsDb();
+  if (!db) return res.status(503).json({ error: "Analytics database not configured" });
+  try {
+    return res.json({ granularity, buckets: await readBuckets(db, granularity, limit) });
+  } catch (error) {
+    console.error("[Analytics] Error reading buckets:", error);
     return res.status(500).json({ error: "Internal server error" });
   }
 });

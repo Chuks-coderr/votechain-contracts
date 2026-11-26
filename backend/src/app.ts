@@ -17,17 +17,24 @@ import cors from "cors";
 import helmet from "helmet";
 import http from "http";
 import { connectRedis, getRedis } from "./middleware/redisCache";
-import { requestTracing } from "./middleware/requestTracing";
+import { ConfigError, getConfig, publicConfig, type Config } from "./config";
+import { log, requestTracing } from "./middleware/requestTracing";
 import { apiKeyAuth } from "./middleware/apiKeyAuth";
 import { rateLimit } from "./middleware/rateLimit";
 import { jsonBodyParser } from "./middleware/jsonBodyParser";
 import { metricsMiddleware, metricsHandler } from "./middleware/metrics";
 import { securityHeaders } from "./middleware/securityHeaders";
+import { requestTimeout } from "./middleware/requestTimeout";
 import healthRoutes from "./routes/health";
 import proposalRoutes from "./routes/proposals";
+import csvRoutes from "./routes/csv";
+import simulateRoutes from "./routes/simulate";
+import analyticsRoutes from "./routes/analytics";
+import { startBucketRefresh } from "./services/analyticsBucketService";
 import leaderboardRoutes from "./routes/leaderboard";
 import apiKeysRoutes from "./routes/apiKeys";
 import adminAuditLogRoutes from "./routes/adminAuditLog";
+import adminTokenRoutes from "./routes/adminToken";
 import cspReportRoutes from "./routes/cspReport";
 import {
   notFoundHandler,
@@ -35,64 +42,44 @@ import {
 } from "./middleware/errorHandler";
 
 // ---------------------------------------------------------------------------
-// Environment variable validation
+// Configuration
 // ---------------------------------------------------------------------------
 
-interface EnvConfig {
-  PORT: string;
-  REDIS_URL: string;
-  ALLOWED_ORIGINS: string;
-}
-
-function validateEnv(): EnvConfig {
-  const required: Array<keyof Pick<EnvConfig, "REDIS_URL">> = ["REDIS_URL"];
-  const missing: string[] = [];
-
-  for (const key of required) {
-    if (!process.env[key]) {
-      missing.push(key);
-    }
-  }
-
-  if (missing.length > 0) {
+function loadStartupConfig(): Config & { redisUrl: string } {
+  try {
+    const config = getConfig();
+    if (!config.redisUrl) throw new ConfigError("REDIS_URL is required.");
+    return { ...config, redisUrl: config.redisUrl };
+  } catch (err) {
+    if (!(err instanceof ConfigError)) throw err;
     console.error(
-      "[startup] Missing required environment variables:\n" +
-        missing.map((k) => `  • ${k}`).join("\n") +
-        "\n\nSet these variables before starting the server. " +
-        "See .env.example for reference."
+      `[startup] Invalid configuration: ${err.message} See .env.example for reference.`
     );
     process.exit(1);
   }
-
-  return {
-    PORT: process.env.PORT ?? "3001",
-    REDIS_URL: process.env.REDIS_URL!,
-    // Default to localhost dev origin; production sets this to the real domain.
-    ALLOWED_ORIGINS:
-      process.env.ALLOWED_ORIGINS ?? "http://localhost:5173",
-  };
 }
 
-const env = validateEnv();
+const env = loadStartupConfig();
+log("info", "configuration loaded", publicConfig(env));
 
 // ---------------------------------------------------------------------------
 // CORS configuration (#32)
 // ---------------------------------------------------------------------------
 
-const allowedOrigins = env.ALLOWED_ORIGINS.split(",").map((o) => o.trim());
+const allowedOrigins = env.allowedOrigins;
 
 const corsOptions: cors.CorsOptions = {
   origin(origin, callback) {
     // Allow requests with no origin (curl, server-to-server, health checks)
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (!origin || config.ALLOWED_ORIGINS.includes(origin)) {
       callback(null, true);
     } else {
       callback(new Error(`CORS: origin '${origin}' not allowed`));
     }
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Request-Id"],
-  exposedHeaders: ["X-Request-Id", "X-Cache", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-RateLimit-Tier"],
+  allowedHeaders: ["Content-Type", "Authorization", "If-None-Match", "X-Request-Id"],
+  exposedHeaders: ["ETag", "X-Record-Count", "X-Truncated", "X-Request-Id", "X-Cache", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-RateLimit-Tier"],
   credentials: true,
   // Tells browsers to cache the preflight response for 10 minutes
   maxAge: 600,
@@ -103,6 +90,7 @@ const corsOptions: cors.CorsOptions = {
 // ---------------------------------------------------------------------------
 
 const app = express();
+app.set("trust proxy", env.trustProxy);
 
 // Security headers — must come before routes.
 // helmet()'s defaults don't match our baseline hardening requirements
@@ -131,6 +119,11 @@ app.use(cors(corsOptions));
 
 app.use(requestTracing);
 app.use(metricsMiddleware);
+// CSP violation reports forwarded by Nginx (SEC-012) — mounted before auth
+// since the browser-originated report never carries an API key, and before
+// the global JSON parser so the route's smaller body cap applies (#516).
+app.use("/", cspReportRoutes);
+
 app.use(jsonBodyParser());
 
 // Health, readiness and metrics — mounted BEFORE rate-limiting and auth so
@@ -138,10 +131,6 @@ app.use(jsonBodyParser());
 // credentials.
 app.get("/metrics", metricsHandler);
 app.use("/", healthRoutes);
-
-// CSP violation reports forwarded by Nginx (SEC-012) — mounted before auth
-// since the browser-originated report never carries an API key.
-app.use("/", cspReportRoutes);
 
 // ── API key authentication & tiered rate limiting ──────────────────────────
 //
@@ -151,14 +140,21 @@ app.use("/", cspReportRoutes);
 //
 // Both are async middleware applied to all /api routes.  Health routes are
 // intentionally excluded (mounted above, before this block).
+app.use("/api", requestTimeout());
 app.use("/api", apiKeyAuth);
 app.use("/api", rateLimit);
+app.use("/api", requestTimeout);
+app.use("/api", compression);
 
 // ── Routes ─────────────────────────────────────────────────────────────────
 app.use("/api", proposalRoutes);
+app.use("/api", csvRoutes);
+app.use("/api", simulateRoutes);
+app.use("/api", analyticsRoutes);
 app.use("/api/leaderboard", leaderboardRoutes);
 app.use("/api", apiKeysRoutes);
 app.use("/api", adminAuditLogRoutes);
+app.use("/api", adminTokenRoutes);
 
 // Catch unmatched routes — must come after all real route registrations.
 app.use(notFoundHandler);
@@ -166,7 +162,7 @@ app.use(notFoundHandler);
 // Global error handler — must be the very last middleware registered.
 app.use(globalErrorHandler);
 
-const PORT = parseInt(env.PORT, 10);
+const PORT = env.port;
 
 // ---------------------------------------------------------------------------
 // Graceful shutdown (#231)
@@ -249,12 +245,13 @@ function registerGracefulShutdown(server: http.Server): void {
 
 // connectRedis now degrades gracefully on failure (#38) — the server always
 // starts regardless of whether Redis is reachable.
-connectRedis(env.REDIS_URL).then(() => {
+connectRedis(env.redisUrl).then(() => {
   const server = http.createServer(app);
   registerGracefulShutdown(server);
-  server.listen(PORT, () =>
-    console.log(`[server] listening on :${PORT}`)
+  server.listen(config.PORT, () =>
+    console.log(`[server] listening on :${config.PORT}`)
   );
+  startBucketRefresh();
 });
 
 export default app;

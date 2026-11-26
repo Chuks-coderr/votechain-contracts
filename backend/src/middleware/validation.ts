@@ -143,3 +143,148 @@ function formatZodErrors(error: ZodError): FieldError[] {
     message: issue.message,
   }));
 }
+
+// ── Nested object / array schemas ─────────────────────────────────────────────
+
+/**
+ * Supported webhook event names.
+ */
+export const webhookEventSchema = z.enum(
+  ["proposal_created", "vote_cast", "proposal_finalised"],
+  {
+    required_error: "events is required",
+    invalid_type_error:
+      "events must contain only supported event names (proposal_created, vote_cast, proposal_finalised)",
+  }
+);
+
+/**
+ * Webhook configuration body schema.
+ *
+ * Demonstrates nested object and array validation with numeric type coercion:
+ *   - address:       56-character Stellar address starting with "G"
+ *   - webhook_url:   URL
+ *   - events:        non-empty array of supported event names
+ *   - retry:         optional nested object (max_attempts, backoff_seconds),
+ *                    string numbers are coerced to integers
+ *   - metadata:      optional flat record of string values
+ */
+export const webhookConfigSchema = z.object({
+  address: z
+    .string({ required_error: "address is required" })
+    .length(56, "address must be a 56-character Stellar address")
+    .regex(/^G/, 'address must start with "G" (Stellar public key format)'),
+
+  webhook_url: z
+    .string({ required_error: "webhook_url is required" })
+    .url("webhook_url must be a valid URL"),
+
+  events: z
+    .array(webhookEventSchema, {
+      required_error: "events is required",
+      invalid_type_error: "events must be an array of supported event names",
+    })
+    .min(1, "events must contain at least one event")
+    .max(16, "events must not contain more than 16 entries"),
+
+  retry: z
+    .object({
+      max_attempts: z.coerce
+        .number({
+          required_error: "retry.max_attempts is required",
+          invalid_type_error: "retry.max_attempts must be a number",
+        })
+        .int("retry.max_attempts must be an integer")
+        .min(1, "retry.max_attempts must be at least 1")
+        .max(10, "retry.max_attempts must not exceed 10"),
+
+      backoff_seconds: z.coerce
+        .number({
+          required_error: "retry.backoff_seconds is required",
+          invalid_type_error: "retry.backoff_seconds must be a number",
+        })
+        .int("retry.backoff_seconds must be an integer")
+        .min(0, "retry.backoff_seconds must not be negative")
+        .max(3_600, "retry.backoff_seconds must not exceed 3600"),
+    })
+    .optional(),
+
+  metadata: z.record(z.string()).optional(),
+});
+
+export type WebhookConfigBody = z.infer<typeof webhookConfigSchema>;
+
+// ── Nesting depth limiting ────────────────────────────────────────────────────
+
+/**
+ * Default maximum nesting depth for request bodies.
+ *
+ * The root body counts as depth 1, so with the default a payload may contain
+ * at most 10 levels of nested objects/arrays.
+ */
+export const DEFAULT_MAX_DEPTH = 10;
+
+/**
+ * Compute the nesting depth of a JSON-compatible value.
+ *
+ * Primitives have depth 0; an object or array adds 1 on top of its deepest
+ * child. There is no circular-reference handling because JSON request bodies
+ * cannot contain cycles.
+ */
+export function measureDepth(value: unknown): number {
+  if (Array.isArray(value)) {
+    if (value.length === 0) return 1;
+    let max = 0;
+    for (const item of value) {
+      const childDepth = measureDepth(item);
+      if (childDepth > max) max = childDepth;
+    }
+    return 1 + max;
+  }
+
+  if (value !== null && typeof value === "object") {
+    const keys = Object.keys(value as Record<string, unknown>);
+    if (keys.length === 0) return 1;
+    let max = 0;
+    for (const key of keys) {
+      const childDepth = measureDepth((value as Record<string, unknown>)[key]);
+      if (childDepth > max) max = childDepth;
+    }
+    return 1 + max;
+  }
+
+  return 0;
+}
+
+/**
+ * Returns an Express middleware that rejects overly deep request bodies with a
+ * 400 before delegating to `validateBody` for schema (incl. nested) validation.
+ *
+ * This is additive: it reuses `validateBody` unchanged, so existing schemas and
+ * behavior are unaffected. Pass `maxDepth` to override `DEFAULT_MAX_DEPTH`.
+ */
+export function validateBodyWithDepthLimit<T>(
+  schema: ZodSchema<T>,
+  maxDepth: number = DEFAULT_MAX_DEPTH
+) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const depth = measureDepth(req.body);
+
+    if (depth > maxDepth) {
+      res.status(400).json({
+        error: {
+          code: "VALIDATION_ERROR",
+          fields: [
+            {
+              field: "_root",
+              message: `request body exceeds maximum nesting depth of ${maxDepth}`,
+            },
+          ],
+        },
+      });
+      return;
+    }
+
+    return validateBody(schema)(req, res, next);
+  };
+}

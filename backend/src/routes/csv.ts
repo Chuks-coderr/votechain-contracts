@@ -26,70 +26,80 @@
  */
 
 import { Router, Response } from "express";
-import { PassThrough } from "stream";
+import { Readable, Transform } from "stream";
+import { pipeline } from "stream/promises";
+import { log } from "../middleware/requestTracing";
 import { csvExportRateLimit } from "../middleware/csvExportRateLimit";
 
 const router = Router();
 const MAX_CSV_EXPORT_ROWS = 10_000;
 
-router.use(csvExportRateLimit);
-
-interface CappedRows<T> {
-  rows: T[];
-  count: number;
-  truncated: boolean;
-}
-
-export async function capCsvRows<T>(
-  source: Iterable<T> | AsyncIterable<T>,
-  maxRows = MAX_CSV_EXPORT_ROWS,
-): Promise<CappedRows<T>> {
-  const iterator: AsyncIterator<T> =
-    Symbol.asyncIterator in Object(source)
-      ? (source as AsyncIterable<T>)[Symbol.asyncIterator]()
-      : (async function* () {
-          yield* source as Iterable<T>;
-        })();
-  const rows: T[] = [];
-
-  while (rows.length < maxRows) {
-    const next = await iterator.next();
-    if (next.done) {
-      return { rows, count: rows.length, truncated: false };
-    }
-    rows.push(next.value);
-  }
-
-  const next = await iterator.next();
-  if (!next.done) {
-    await iterator.return?.();
-  }
-
-  return { rows, count: rows.length, truncated: !next.done };
-}
-
+/**
+ * Streams rows as CSV with backpressure, capped at `maxRows` (#522).
+ *
+ * X-Record-Count / X-Truncated are headers when the source is an array (size
+ * known up front) and HTTP trailers otherwise.
+ */
 export async function sendCsv<T>(
   res: Response,
   filename: string,
   columns: string,
   rows: Iterable<T> | AsyncIterable<T>,
   formatRow: (row: T) => string,
+  maxRows = MAX_CSV_EXPORT_ROWS,
 ): Promise<void> {
-  const result = await capCsvRows(rows);
-  res.setHeader("X-Record-Count", result.count);
-  if (result.truncated) {
-    res.setHeader("X-Truncated", "true");
-  }
-  res.setHeader("Content-Type", "text/csv; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  let count = 0;
+  let truncated = false;
 
-  const stream = new PassThrough();
-  stream.pipe(res);
-  stream.write(`${columns}\r\n`);
-  for (const row of result.rows) {
-    stream.write(`${formatRow(row)}\r\n`);
+  async function* capped() {
+    for await (const row of rows) {
+      if (count >= maxRows) {
+        truncated = true;
+        return; // closes the source cursor
+      }
+      count++;
+      yield row;
+    }
   }
-  stream.end();
+
+  const known = Array.isArray(rows);
+  if (known) {
+    res.setHeader("X-Record-Count", Math.min(rows.length, maxRows));
+    if (rows.length > maxRows) res.setHeader("X-Truncated", "true");
+  } else {
+    res.setHeader("Trailer", "X-Record-Count, X-Truncated");
+  }
+
+  const toCsv = new Transform({
+    writableObjectMode: true,
+    construct(callback) {
+      this.push(`${columns}\r\n`);
+      callback();
+    },
+    transform(row: T, _encoding, callback) {
+      try {
+        callback(null, `${formatRow(row)}\r\n`);
+      } catch (error) {
+        callback(error as Error);
+      }
+    },
+    flush(callback) {
+      if (!known) {
+        res.addTrailers({
+          "X-Record-Count": String(count),
+          "X-Truncated": String(truncated),
+        });
+      }
+      callback();
+    },
+  });
+
+  try {
+    await pipeline(Readable.from(capped(), { highWaterMark: 16 }), toCsv, res);
+  } catch (error) {
+    // Source failure or client disconnect; pipeline has destroyed the streams.
+    log("error", "CSV export aborted", { error: String(error) });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -101,7 +111,7 @@ export async function sendCsv<T>(
  *
  * Headers: proposal_id, voter, vote, weight, timestamp
  */
-router.get("/proposals/:id/votes.csv", async (req, res) => {
+router.get("/proposals/:id/votes.csv", csvExportRateLimit, async (req, res) => {
   const { id } = req.params;
 
   // TODO: replace the empty source with a database cursor, e.g.:
@@ -130,7 +140,7 @@ router.get("/proposals/:id/votes.csv", async (req, res) => {
  * Headers: id, title, state, proposer, votes_yes, votes_no, votes_abstain,
  *          quorum, start_time, end_time
  */
-router.get("/proposals.csv", async (_req, res) => {
+router.get("/proposals.csv", csvExportRateLimit, async (_req, res) => {
   // TODO: replace the empty source with a database cursor, e.g.:
   //   const rows = await db.query(
   //     `SELECT id, title, state, proposer, votes_yes, votes_no, votes_abstain,
