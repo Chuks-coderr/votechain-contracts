@@ -31,6 +31,7 @@ vi.mock("../src/middleware/redisCache", () => ({
 }));
 
 // Import the simulate router (default export).
+import { estimateCastVoteFee } from "../src/services/feeEstimateService";
 import simulateRouter from "../src/routes/simulate";
 
 // Minimal Express app with just the simulate route mounted.
@@ -103,64 +104,30 @@ describe("POST /simulate — HTML tag validation (#320)", () => {
   });
 });
 
-describe("POST /simulate — fee_estimate field (#523)", () => {
-  it("includes fee_estimate on a successful 200 response", async () => {
-    const res = await request(app)
-      .post("/simulate")
-      .send({
-        token_supply: 10_000_000,
-        votes_yes: 6_000_000,
-        votes_no: 1_000_000,
-        votes_abstain: 500_000,
-        quorum: 5_000_000,
-      });
-
-    expect(res.status).toBe(200);
-    expect(res.body.fee_estimate).toBeDefined();
+describe("fee estimate (#523)", () => {
+  it("returns a best-effort range in the /simulate response", async () => {
+    const res = await request(app).post("/simulate").send({
+      token_supply: 100, votes_yes: 60, votes_no: 1, votes_abstain: 0, quorum: 10,
+    });
+    expect(res.body.fee_estimate).toEqual({
+      best_effort: true,
+      source: "fallback",
+      unit: "stroops",
+      min: expect.stringMatching(/^\d+$/),
+      max: expect.stringMatching(/^\d+$/),
+    });
   });
 
-  it("fee_estimate.min_fee_xlm is a positive number", async () => {
-    const res = await request(app)
-      .post("/simulate")
-      .send({
-        token_supply: 10_000_000,
-        votes_yes: 6_000_000,
-        votes_no: 1_000_000,
-        votes_abstain: 500_000,
-        quorum: 5_000_000,
-      });
-
-    expect(typeof res.body.fee_estimate.min_fee_xlm).toBe("number");
-    expect(res.body.fee_estimate.min_fee_xlm).toBeGreaterThan(0);
-  });
-
-  it("fee_estimate.max_fee_xlm >= fee_estimate.min_fee_xlm", async () => {
-    const res = await request(app)
-      .post("/simulate")
-      .send({
-        token_supply: 10_000_000,
-        votes_yes: 6_000_000,
-        votes_no: 1_000_000,
-        votes_abstain: 500_000,
-        quorum: 5_000_000,
-      });
-
-    expect(res.body.fee_estimate.max_fee_xlm).toBeGreaterThanOrEqual(
-      res.body.fee_estimate.min_fee_xlm,
-    );
-  });
-
-  it('fee_estimate.note === "best-effort estimate only"', async () => {
-    const res = await request(app)
-      .post("/simulate")
-      .send({
-        token_supply: 10_000_000,
-        votes_yes: 6_000_000,
-        votes_no: 1_000_000,
-        votes_abstain: 500_000,
-        quorum: 5_000_000,
-      });
-
-    expect(res.body.fee_estimate.note).toBe("best-effort estimate only");
+  it("derives the range from simulation and falls back on failure or timeout", async () => {
+    const params = { voter: "G", proposalId: BigInt(1), vote: "Yes" as const };
+    expect(await estimateCastVoteFee(params, async () => BigInt(1000))).toMatchObject({
+      source: "simulation", min: "1100", max: "1350",
+    });
+    expect(
+      await estimateCastVoteFee(params, async () => { throw new Error("rpc down"); }),
+    ).toMatchObject({ source: "fallback" });
+    expect(
+      await estimateCastVoteFee(params, () => new Promise(() => {}), 5),
+    ).toMatchObject({ source: "fallback" });
   });
 });

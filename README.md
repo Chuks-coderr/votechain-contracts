@@ -1604,6 +1604,7 @@ We welcome contributions from the community. Please see [CONTRIBUTING.md](CONTRI
 
 - **[GETTING_STARTED.md](docs/GETTING_STARTED.md)** — Step-by-step setup guide
 - **[API Reference](docs/api-reference.md)** — Complete REST API reference (OpenAPI 3.1) · [Swagger UI](https://veracindarella.github.io/votechain-contracts/api/)
+- **[Postman Collection](api/postman/votechain-api.postman_collection.json)** — Importable API client collection generated from [`api/openapi.yml`](api/openapi.yml), version-pinned to VoteChain API v1.0.0
 - **[Proposal Lifecycle](docs/lifecycle.md)** — Detailed state diagram and transitions
 - **[Storage Model](docs/storage.md)** — Storage tier strategy and optimization
 - **[Upgrading](docs/upgrading.md)** — Contract upgrade procedures

@@ -151,6 +151,41 @@ pub fn set_admin(env: &Env, admin: &Address) {
     env.storage().instance().set(&TokenDataKey::Admin, admin);
 }
 
+/// Stores the pending admin address nominated for a two-step rotation.
+pub fn set_pending_admin(env: &Env, addr: &Address) {
+    env.storage().instance().set(&TokenDataKey::PendingAdmin, addr);
+}
+
+/// Returns the pending admin address, if a nomination is outstanding.
+pub fn get_pending_admin(env: &Env) -> Option<Address> {
+    env.storage()
+        .instance()
+        .get(&TokenDataKey::PendingAdmin)
+}
+
+/// Clears the pending admin nomination and its acceptance expiry.
+pub fn clear_pending_admin(env: &Env) {
+    env.storage().instance().remove(&TokenDataKey::PendingAdmin);
+    env.storage()
+        .instance()
+        .remove(&TokenDataKey::AdminTransferExpiry);
+}
+
+/// Stores the expiry timestamp for the pending admin nomination.
+pub fn set_admin_transfer_expiry(env: &Env, ts: u64) {
+    env.storage()
+        .instance()
+        .set(&TokenDataKey::AdminTransferExpiry, &ts);
+}
+
+/// Returns the expiry timestamp for the pending admin nomination.
+pub fn get_admin_transfer_expiry(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&TokenDataKey::AdminTransferExpiry)
+        .unwrap_or(0)
+}
+
 /// Stores the contract version as a `(major, minor, patch)` tuple.
 pub fn set_version(env: &Env, version: (u32, u32, u32)) {
     env.storage()

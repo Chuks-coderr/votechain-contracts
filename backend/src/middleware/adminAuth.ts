@@ -20,7 +20,10 @@
  *   router.post("/proposals/invalidate", adminAuth, handler);
  *
  * Environment variables:
- *   ADMIN_JWT_SECRET            Secret used to verify tokens (default: "changeme")
+ *   ADMIN_JWT_SECRET            Secret used to verify tokens (no default; auth fails closed)
+ *   ADMIN_JWT_TTL_SECONDS       Max token lifetime (default: 900) — #517
+ *   ADMIN_JWT_REFRESH_WINDOW_SECONDS  How long after expiry a token can be refreshed (default: 300) — #517
+ *   ADMIN_JWT_MAX_SESSION_SECONDS     Total session length across refreshes (default: 28800) — #517
  *   ADMIN_STELLAR_ADDRESS       The on-chain admin Stellar address that must appear in the token payload
  *   ADMIN_AUTH_RATE_LIMIT       Max auth attempts per IP per minute (default: 5) — #318
  *   ADMIN_AUTH_BLOCK_THRESHOLD  Failed attempts within the block window that trigger an IP block (default: 10) — #318
@@ -28,7 +31,7 @@
  *   ADMIN_AUTH_BLOCK_DURATION_MS  How long an IP stays blocked once it trips the threshold (default: 300000 = 5 min) — #318
  *
  * Token format:
- *   JWT signed with HMAC-SHA256, payload: { stellarAddress: string }
+ *   JWT signed with HMAC-SHA256, payload: { stellarAddress, iat, exp, auth_time? }
  *   Passed via: Authorization: Bearer <token>
  *
  * Rate limiting (#318 — Security: rate limiting for authentication endpoints):
@@ -42,12 +45,18 @@
 
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
+import { getConfig } from "../config";
 import { log } from "./requestTracing";
+import { getConfig } from "./config";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface AdminTokenPayload {
   stellarAddress: string;
+  iat: number;
+  exp: number;
+  /** When the session began; preserved across refreshes. */
+  auth_time: number;
 }
 
 interface RateLimitEntry {
@@ -64,18 +73,14 @@ interface FailureEntry {
 
 // ── Configuration (env-driven, #318) ───────────────────────────────────────
 
-function envInt(name: string, fallback: number): number {
-  const raw = process.env[name];
-  const parsed = raw === undefined ? NaN : Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
+const config = getConfig();
 
-const RATE_LIMIT_MAX = envInt("ADMIN_AUTH_RATE_LIMIT", 5);
+const RATE_LIMIT_MAX = config.adminAuthRateLimit;
 const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
 
-const BLOCK_THRESHOLD = envInt("ADMIN_AUTH_BLOCK_THRESHOLD", 10);
-const BLOCK_WINDOW_MS = envInt("ADMIN_AUTH_BLOCK_WINDOW_MS", 5 * 60_000);
-const BLOCK_DURATION_MS = envInt("ADMIN_AUTH_BLOCK_DURATION_MS", 5 * 60_000);
+const BLOCK_THRESHOLD = config.adminAuthBlockThreshold;
+const BLOCK_WINDOW_MS = config.adminAuthBlockWindowMs;
+const BLOCK_DURATION_MS = config.adminAuthBlockDurationMs;
 
 // ── Rate limiter / brute-force tracker state ───────────────────────────────
 
@@ -165,6 +170,56 @@ function recordFailure(ip: string, reason: string): void {
  * Calls next() only when all checks pass.
  */
 export function adminAuth(req: Request, res: Response, next: NextFunction): void {
+  authenticate(req, res, next, 0);
+}
+
+/** Like adminAuth, but also accepts tokens that expired within the refresh window. */
+export function adminRefreshAuth(req: Request, res: Response, next: NextFunction): void {
+  authenticate(req, res, next, getConfig().adminJwtRefreshWindowSeconds);
+}
+
+/** Signs a short-lived admin JWT. */
+export function issueAdminToken(
+  stellarAddress: string,
+  authTime = Math.floor(Date.now() / 1000)
+): string {
+  const { adminJwtSecret, adminJwtTtlSeconds } = getConfig();
+  if (!adminJwtSecret) throw new Error("ADMIN_JWT_SECRET is not configured.");
+  return jwt.sign({ stellarAddress, auth_time: authTime }, adminJwtSecret, {
+    algorithm: "HS256",
+    expiresIn: adminJwtTtlSeconds,
+  });
+}
+
+/** Verifies signature, expiry and lifetime; throws if the token is unacceptable. */
+function verifyToken(token: string, graceSeconds: number): AdminTokenPayload {
+  const { adminJwtSecret, adminJwtTtlSeconds, adminJwtMaxSessionSeconds } = getConfig();
+  if (!adminJwtSecret) throw new Error("ADMIN_JWT_SECRET is not configured");
+
+  const payload = jwt.verify(token, adminJwtSecret, {
+    algorithms: ["HS256"],
+    ignoreExpiration: true, // enforced below, with the refresh grace period
+  }) as AdminTokenPayload;
+  const { iat, exp } = payload;
+  const authTime = payload.auth_time ?? iat;
+  const now = Math.floor(Date.now() / 1000);
+
+  if (![iat, exp, authTime].every(Number.isFinite)) throw new Error("missing claims");
+  if (iat > now + 60) throw new Error("issued in the future");
+  if (exp - iat > adminJwtTtlSeconds) throw new Error("lifetime too long");
+  if (now >= exp + graceSeconds) throw new Error("expired");
+  if (authTime > iat || now - authTime >= adminJwtMaxSessionSeconds) {
+    throw new Error("session expired");
+  }
+  return { ...payload, auth_time: authTime };
+}
+
+function authenticate(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+  graceSeconds: number
+): void {
   const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
 
   // ── Step 0: Brute-force IP block (#318) ────────────────────────────────
@@ -211,11 +266,10 @@ export function adminAuth(req: Request, res: Response, next: NextFunction): void
   const token = authHeader.slice("Bearer ".length);
 
   // ── Step 3: Verify JWT ─────────────────────────────────────────────────
-  const secret = process.env.ADMIN_JWT_SECRET ?? "changeme";
   let payload: AdminTokenPayload;
 
   try {
-    payload = jwt.verify(token, secret) as AdminTokenPayload;
+    payload = verifyToken(token, graceSeconds);
   } catch {
     recordFailure(ip, "invalid_or_expired_token");
     res.status(401).json({
@@ -229,7 +283,7 @@ export function adminAuth(req: Request, res: Response, next: NextFunction): void
   }
 
   // ── Step 4: Verify stellarAddress matches admin ────────────────────────
-  const adminAddress = process.env.ADMIN_STELLAR_ADDRESS;
+  const adminAddress = getConfig().adminStellarAddress;
 
   if (!adminAddress || payload.stellarAddress !== adminAddress) {
     recordFailure(ip, "stellar_address_mismatch");
@@ -244,5 +298,6 @@ export function adminAuth(req: Request, res: Response, next: NextFunction): void
   }
 
   // ── All checks passed ──────────────────────────────────────────────────
+  res.locals.adminToken = payload;
   next();
 }

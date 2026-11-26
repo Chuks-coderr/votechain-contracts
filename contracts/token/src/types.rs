@@ -14,6 +14,10 @@
 
 use soroban_sdk::{contracterror, contracttype, Address};
 
+/// Minimum allowed admin transfer acceptance window in seconds (300 s / 5 min),
+/// absorbing Stellar ledger-timestamp drift.
+pub(crate) const MIN_TRANSFER_WINDOW: u64 = 300;
+
 /// All revert conditions for the token contract.
 #[contracterror]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -51,6 +55,14 @@ pub enum ContractError {
     /// 15 – SEC-013: caller already has an active stake position (v1 supports
     /// only a single position per address)
     AlreadyStaked = 15,
+    /// 16 – No pending admin transfer has been proposed
+    PendingAdminNotSet = 16,
+    /// 17 – The admin transfer acceptance window has expired; propose again
+    AdminTransferExpired = 17,
+    /// 18 – Caller is not the nominated pending admin
+    NotPendingAdmin = 18,
+    /// 19 – Admin transfer acceptance window is shorter than MIN_TRANSFER_WINDOW
+    TransferWindowTooShort = 19,
 }
 
 /// Per-allowance record storing both the approved amount and the ledger sequence
@@ -114,6 +126,13 @@ pub enum TokenDataKey {
     /// Contract version stored as a `(major, minor, patch)` semver tuple (instance storage).
     /// Key space: singleton — only one `Version` entry exists.
     Version,
+
+    /// Address nominated to become the next admin (instance storage).
+    /// Set by `propose_admin_transfer`; cleared on acceptance or expiry.
+    PendingAdmin,
+
+    /// Unix timestamp after which the pending admin nomination expires (instance storage).
+    AdminTransferExpiry,
 
     /// SEC-013: Active ve-token stake position for `Address` (persistent storage).
     /// Key space: one entry per staker; removed on `unstake`.

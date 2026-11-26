@@ -49,7 +49,7 @@ depending on value size.
 | 5 | `RestrictAdminVote`              | Instance   | Free (instance bucket already loaded)              |
 | 6 | `Admin`                          | Instance   | Free — read only when RestrictAdminVote = true     |
 | 7 | `VotingToken`                    | Instance   | Free — one read, address passed to token client    |
-| 8 | `VoterSnapshot(proposal_id, voter)` | Persistent | Snapshot dedup: returns early if already stored |
+| 8 | `VoterSnapshot(proposal_id, voter)` | Persistent | Snapshot reuse: skips the token `balance()` call if already stored |
 
 **Persistent reads:** 4 (Proposal, HasVoted, Delegation, VoterSnapshot)  
 **Instance reads:** effectively 1 (shared bucket)  
@@ -58,12 +58,26 @@ depending on value size.
 
 ### Notes
 
-- `VoterSnapshot` is written only on the first vote; subsequent calls to
-  `cast_vote` for the same voter read it and return early without a token
-  cross-contract call, saving ~30,000–50,000 instructions.
+- `VoterSnapshot(proposal_id, voter)` is read once; when a snapshot is already
+  present the token cross-contract `balance()` call is skipped entirely,
+  saving ~30,000–50,000 instructions.
 - The token cross-contract `balance()` call is the most expensive single
   operation (~80,000–120,000 instructions) and is skipped when the snapshot
   already exists.
+
+### Verification — no redundant `VotingToken` read
+
+Re-verified against the current `cast_vote` implementation:
+
+- `get_voting_token` is invoked **once**; the returned address feeds a single
+  `token::Client::new(...)` construction that is reused for the `balance()`
+  call. There is no second `VotingToken` read and no client rebuild.
+- The only instance keys touched are `Paused`, `RestrictAdminVote`, `Admin`
+  (only when `RestrictAdminVote` is enabled) and `VotingToken` — all served
+  from the single instance bucket load already counted above.
+- The `cast_vote` instance-read count is therefore unchanged from the profile
+  above: **1 instance bucket load, 1 `VotingToken` read, 1 token client**.
+  No regression. Snapshot behaviour is untouched.
 
 ---
 

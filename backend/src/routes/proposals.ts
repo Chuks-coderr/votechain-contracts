@@ -14,21 +14,35 @@
 
 /**
  * Proposal routes with Redis caching and zod request validation applied.
- * Replace the stub handlers with real Stellar RPC / indexer calls.
+ * Fetches proposal data from the on-chain governance contract via Soroban RPC.
  */
 
 import { Router, Request, Response } from "express";
+import { Keypair } from "@stellar/stellar-sdk";
 import {
   cacheProposalList,
   cacheProposalItem,
   getCacheMetrics,
   invalidateProposalCache,
 } from "../middleware/redisCache";
+import { proposalEtag } from "../middleware/proposalEtag";
 import { adminAuth } from "../middleware/adminAuth";
+import { validateAddressParam } from "../middleware/validation";
+import { ContractService, createContractServiceFromEnv, type Proposal, type ProposalState } from "../services/contractService";
 
 const router = Router();
 
-const VALID_STATES = new Set(["active", "passed", "rejected", "executed", "cancelled"]);
+// Lazy-initialized contract service
+let contractService: ContractService | null = null;
+
+function getContractService(): ContractService {
+  if (!contractService) {
+    contractService = createContractServiceFromEnv();
+  }
+  return contractService;
+}
+
+const VALID_STATES = new Set(["Active", "Passed", "Rejected", "Executed", "Cancelled"]);
 
 /**
  * Predefined tag taxonomy for proposal categorisation (issue #102).
@@ -46,206 +60,276 @@ const PREDEFINED_TAGS = new Set([
 ]);
 
 /**
- * Sanitises a full-text search query for use in a PostgreSQL `websearch_to_tsquery` call.
- *
- * Security: this function normalises the query string so that it cannot inject raw
- * SQL operators into tsvector search.  We use `websearch_to_tsquery` (PostgreSQL 11+)
- * via a parameterised query — the caller never interpolates the value directly into SQL.
- *
- * - Strips leading/trailing whitespace.
- * - Collapses multiple internal whitespace characters to a single space.
- * - Truncates to 200 characters to cap query complexity.
- * - Returns an empty string (meaning "match all") when the input is blank.
+ * Sanitises a full-text search query.
  */
 function sanitiseSearchQuery(raw: string): string {
   return raw.trim().replace(/\s+/g, " ").slice(0, 200);
 }
 
 /**
- * Builds a parameterised SQL query that filters proposals by state and/or a
- * full-text search term.  The tsvector column `search_vector` is expected to
- * be a generated column (or maintained by a trigger) with GIN index support:
- *
- *   ALTER TABLE proposals
- *     ADD COLUMN search_vector tsvector
- *     GENERATED ALWAYS AS (
- *       setweight(to_tsvector('english', coalesce(title,'')), 'A') ||
- *       setweight(to_tsvector('english', coalesce(description,'')), 'B')
- *     ) STORED;
- *
- *   CREATE INDEX proposals_search_idx ON proposals USING GIN (search_vector);
- *
- * Results are ordered by relevance (ts_rank) when a search term is provided,
- * and by `id DESC` otherwise.
- *
- * All user-supplied values are passed as positional parameters ($1, $2, …) to
- * prevent SQL injection.
- *
- * @returns { sql: string; params: unknown[] }
+ * Transform contract Proposal to API response format.
  */
-function buildSearchQuery(
-  state: string | undefined,
-  q: string | undefined,
-  limit: number,
-  offset: number,
-  tag: string | undefined,
-): { sql: string; params: unknown[] } {
-  const params: unknown[] = [];
-  const conditions: string[] = [];
-
-  if (state) {
-    params.push(state);
-    conditions.push(`state = $${params.length}`);
-  }
-
-  let orderBy = "id DESC";
-  if (q) {
-    params.push(q);
-    const p = params.length;
-    conditions.push(`search_vector @@ websearch_to_tsquery('english', $${p})`);
-    // Weight 'A' = title, 'B' = description — title matches rank higher.
-    orderBy = `ts_rank(search_vector, websearch_to_tsquery('english', $${p})) DESC, id DESC`;
-  }
-
-  // Issue #102: tag-based filtering.
-  // The `proposal_tags` column stores tags as a lowercase text array.
-  // We use the standard PostgreSQL `= ANY(...)` operator with a parameterised
-  // value so no interpolation of user-supplied data occurs.
-  if (tag) {
-    params.push(tag.toLowerCase());
-    conditions.push(`$${params.length} = ANY(proposal_tags)`);
-  }
-
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-  params.push(limit, offset);
-
-  const sql = `
-    SELECT
-      id,
-      title,
-      description,
-      state,
-      proposer,
-      votes_yes,
-      votes_no,
-      votes_abstain,
-      quorum,
-      start_time,
-      end_time,
-      execute_after,
-      proposal_tags
-    FROM proposals
-    ${where}
-    ORDER BY ${orderBy}
-    LIMIT $${params.length - 1}
-    OFFSET $${params.length}
-  `;
-
-  return { sql, params };
+function transformProposal(p: Proposal): Record<string, unknown> {
+  return {
+    id: Number(p.id),
+    title: p.title,
+    description: p.description,
+    state: p.state,
+    proposer: p.proposer,
+    votes_yes: Number(p.votesYes),
+    votes_no: Number(p.votesNo),
+    votes_abstain: Number(p.votesAbstain),
+    quorum: Number(p.quorum),
+    start_time: Number(p.startTime),
+    end_time: Number(p.endTime),
+    execute_after: Number(p.executeAfter),
+    // proposal_tags not stored on-chain yet; return empty array for compatibility
+    proposal_tags: [],
+  };
 }
 
 // GET /proposals — cached 30 s
-// Supports ?q= for full-text search, ?state= for state filtering,
-// ?tag= for tag filtering (issue #102),
-// ?cursor= (last seen proposal ID) and ?limit= for cursor-based pagination (#225).
-router.get("/proposals", cacheProposalList, async (req: Request, res: Response) => {
-  // TODO: fetch from Stellar RPC / indexer (stub returns empty array)
-  const proposals: Array<{ id: number; title?: string; description?: string; state?: string; proposal_tags?: string[] }> = [];
+// Supports ?state= for state filtering, ?cursor= and ?limit= for pagination.
+router.get("/proposals", proposalEtag, cacheProposalList, async (req: Request, res: Response) => {
+  try {
+    const service = getContractService();
 
-  // Cursor-based pagination (#225): cursor = last seen proposal_id, limit default 20, max 100.
-  const rawLimit = Number.parseInt(String(req.query.limit ?? "20"), 10);
-  const limit = Number.isNaN(rawLimit) ? 20 : Math.min(100, Math.max(1, rawLimit));
+    // Pagination: cursor = last seen proposal_id, limit default 20, max 100.
+    const rawLimit = Number.parseInt(String(req.query.limit ?? "20"), 10);
+    const limit = Number.isNaN(rawLimit) ? 20 : Math.min(100, Math.max(1, rawLimit));
 
-  const cursor = typeof req.query.cursor === "string" && req.query.cursor !== ""
-    ? Number.parseInt(req.query.cursor, 10)
-    : undefined;
+    const cursor = typeof req.query.cursor === "string" && req.query.cursor !== ""
+      ? Number.parseInt(req.query.cursor, 10)
+      : undefined;
 
-  if (cursor !== undefined && (Number.isNaN(cursor) || cursor < 0)) {
-    return res.status(400).json({ error: "cursor must be a non-negative integer proposal ID" });
-  }
-
-  const state = typeof req.query.state === "string" ? req.query.state : undefined;
-  if (state && !VALID_STATES.has(state)) {
-    return res.status(400).json({ error: "Invalid proposal state" });
-  }
-
-  // Issue #40: full-text search parameter.
-  const rawQ = typeof req.query.q === "string" ? req.query.q : undefined;
-  const q = rawQ !== undefined ? sanitiseSearchQuery(rawQ) : undefined;
-
-  // Issue #102: tag-based filtering.
-  const tag = typeof req.query.tag === "string" ? req.query.tag : undefined;
-  if (tag !== undefined) {
-    const normalisedTag = tag.toLowerCase();
-    if (!PREDEFINED_TAGS.has(normalisedTag)) {
-      return res.status(400).json({
-        error: `Invalid tag. Allowed tags: ${[...PREDEFINED_TAGS].join(", ")}`,
-      });
+    if (cursor !== undefined && (Number.isNaN(cursor) || cursor < 0)) {
+      return res.status(400).json({ error: "cursor must be a non-negative integer proposal ID" });
     }
+
+    const state = typeof req.query.state === "string" ? req.query.state : undefined;
+    if (state && !VALID_STATES.has(state)) {
+      return res.status(400).json({ error: "Invalid proposal state" });
+    }
+
+    // Issue #102: tag-based filtering (not yet supported on-chain)
+    const tag = typeof req.query.tag === "string" ? req.query.tag : undefined;
+    if (tag !== undefined) {
+      const normalisedTag = tag.toLowerCase();
+      if (!PREDEFINED_TAGS.has(normalisedTag)) {
+        return res.status(400).json({
+          error: `Invalid tag. Allowed tags: ${[...PREDEFINED_TAGS].join(", ")}`,
+        });
+      }
+    }
+
+    // Use a funded account to simulate read calls.
+    // In production, this could be a dedicated read-only account.
+    // For now, use the admin account or any funded account.
+    const readAs = getConfig().readAccount;
+    if (!readAs) {
+      return res.status(500).json({ error: "READ_ACCOUNT or SOROBAN_ACCOUNT not configured for contract reads" });
+    }
+
+    // Fetch proposals from contract (offset-based for now; contract uses offset/limit)
+    // Note: cursor pagination would require fetching all and filtering, which is inefficient.
+    // For now, we use offset=0 and apply cursor filtering in-memory.
+    const offset = cursor !== undefined ? BigInt(cursor) : BigInt(0);
+    const fetchLimit = BigInt(limit + 1); // fetch one extra to check hasMore
+    const proposals = await service.listProposals(readAs, offset, fetchLimit);
+
+    // Filter by state if requested
+    let filtered = proposals;
+    if (state) {
+      filtered = filtered.filter((p) => p.state === state);
+    }
+
+    // Tag filtering not supported on-chain yet; would need off-chain indexer
+    if (tag) {
+      // No-op for now; tags not stored on-chain
+    }
+
+    // Sort descending by id (most recent first)
+    filtered.sort((a, b) => (b.id > a.id ? 1 : -1));
+    const data = filtered.slice(0, limit);
+
+    // next_cursor is the id of the last item returned; absent when no more pages.
+    const hasMore = filtered.length > limit;
+    const next_cursor = hasMore && data.length > 0 ? String(data[data.length - 1].id) : undefined;
+
+    const response = {
+      data: data.map(transformProposal),
+      pagination: {
+        limit,
+        has_more: hasMore,
+        ...(next_cursor !== undefined ? { next_cursor } : {}),
+        ...(cursor !== undefined ? { cursor: String(cursor) } : {}),
+        ...(state ? { state } : {}),
+        ...(tag ? { tag: tag.toLowerCase() } : {}),
+      },
+    };
+
+    res.json(response);
+  } catch (err: unknown) {
+    console.error("[GET /proposals] Error:", err);
+    res.status(500).json({ error: (err as Error).message ?? "Failed to fetch proposals" });
   }
-
-  // Build the parameterised DB query (for use with a real DB connection).
-  // Cursor pagination uses `WHERE id < :cursor ORDER BY id DESC` for append-only data.
-  const offset = 0; // offset unused in cursor mode; kept for buildSearchQuery signature compat
-  const { sql, params } = buildSearchQuery(state, q || undefined, limit, offset, tag?.toLowerCase());
-  // TODO: replace stub with: const rows = await db.query(sql, params);
-  void sql;
-  void params;
-
-  // Stub: filter the in-memory array (replace with DB results once connected).
-  let filtered = proposals.slice();
-
-  if (cursor !== undefined) {
-    filtered = filtered.filter((p) => p.id < cursor);
-  }
-
-  if (state) {
-    filtered = filtered.filter((p) => p.state === state);
-  }
-
-  if (q) {
-    const lower = q.toLowerCase();
-    filtered = filtered.filter(
-      (p) =>
-        p.title?.toLowerCase().includes(lower) ||
-        p.description?.toLowerCase().includes(lower),
-    );
-  }
-
-  if (tag) {
-    const normalisedTag = tag.toLowerCase();
-    filtered = filtered.filter((p) => p.proposal_tags?.includes(normalisedTag));
-  }
-
-  // Sort descending by id (most recent first) then page with cursor.
-  filtered.sort((a, b) => b.id - a.id);
-  const data = filtered.slice(0, limit);
-
-  // next_cursor is the id of the last item returned; absent when no more pages.
-  const hasMore = filtered.length > limit;
-  const next_cursor = hasMore && data.length > 0 ? String(data[data.length - 1].id) : undefined;
-
-  const response: Record<string, unknown> = {
-    data,
-    pagination: {
-      limit,
-      has_more: hasMore,
-      ...(next_cursor !== undefined ? { next_cursor } : {}),
-      ...(cursor !== undefined ? { cursor: String(cursor) } : {}),
-      ...(state ? { state } : {}),
-      ...(q ? { q } : {}),
-      ...(tag ? { tag: tag.toLowerCase() } : {}),
-    },
-  };
-
-  res.json(response);
 });
 
 // GET /proposals/:id — cached 10 s
-router.get("/proposals/:id", cacheProposalItem, async (req: Request, res: Response) => {
-  const { id } = req.params;
-  // TODO: fetch single proposal from Stellar RPC / indexer
-  res.json({ id });
+router.get("/proposals/:id", proposalEtag, cacheProposalItem, async (req: Request, res: Response) => {
+  try {
+    const service = getContractService();
+    const { id } = req.params;
+    const proposalId = BigInt(id);
+
+    const readAs = getConfig().readAccount;
+    if (!readAs) {
+      return res.status(500).json({ error: "READ_ACCOUNT or SOROBAN_ACCOUNT not configured for contract reads" });
+    }
+
+    const proposal = await service.getProposal(readAs, proposalId);
+    res.json(transformProposal(proposal));
+  } catch (err: unknown) {
+    console.error("[GET /proposals/:id] Error:", err);
+    const message = (err as Error).message ?? "Failed to fetch proposal";
+    if (message.includes("not found") || message.includes("ProposalNotFound")) {
+      res.status(404).json({ error: "Proposal not found" });
+    } else {
+      res.status(500).json({ error: message });
+    }
+  }
+});
+
+// POST /proposals — create a new proposal on-chain
+router.post("/proposals", async (req: Request, res: Response) => {
+  try {
+    const { title, description, quorum, duration, proposer } = req.body as {
+      title: string;
+      description: string;
+      quorum: number;
+      duration: number;
+      proposer?: string;
+    };
+
+    // Validation (mirrors frontend and contract validation)
+    if (!title || title.length > 128) {
+      return res.status(400).json({ error: "Title must be 1-128 characters" });
+    }
+    if (!description || description.length > 1024) {
+      return res.status(400).json({ error: "Description must be 1-1024 characters" });
+    }
+    if (!Number.isInteger(quorum) || quorum <= 0) {
+      return res.status(400).json({ error: "Quorum must be a positive integer" });
+    }
+    if (!Number.isInteger(duration) || duration < 60 || duration > 2_592_000) {
+      return res.status(400).json({ error: "Duration must be between 60 and 2,592,000 seconds (1 min - 30 days)" });
+    }
+
+    const service = getContractService();
+
+    // Use proposer from request or default to admin account
+    const proposerAddress = proposer ?? getConfig().sorobanAccount;
+    if (!proposerAddress) {
+      return res.status(500).json({ error: "Proposer address not provided and SOROBAN_ACCOUNT not configured" });
+    }
+
+    // The proposer must sign the transaction. In a real app, this would be done
+    // via Freighter on the frontend. For the backend API, we need the proposer's
+    // secret key to sign. This is a simplified implementation for the MVP.
+    // In production, the frontend would build and sign the transaction, then
+    // submit the signed XDR to the backend or directly to the network.
+    const proposerSecret = getConfig().proposerSecret;
+    if (!proposerSecret) {
+      return res.status(500).json({ error: "Proposer secret key not configured (PROPOSER_SECRET_KEY or SOROBAN_SECRET_KEY)" });
+    }
+
+    const signerKeypair = Keypair.fromSecret(proposerSecret);
+
+    // Verify the signer matches the proposer address
+    if (signerKeypair.publicKey() !== proposerAddress) {
+      return res.status(400).json({ error: "Proposer secret key does not match proposer address" });
+    }
+
+    const result = await service.createProposal(signerKeypair, {
+      proposer: proposerAddress,
+      title,
+      description,
+      quorum: BigInt(quorum),
+      durationSeconds: BigInt(duration),
+    });
+
+    res.status(201).json({ id: Number(result.value), hash: result.hash });
+  } catch (err: unknown) {
+    console.error("[POST /proposals] Error:", err);
+    res.status(500).json({ error: (err as Error).message ?? "Failed to create proposal" });
+  }
+});
+
+// POST /proposals/:id/finalize — finalize a proposal after voting ends
+router.post("/proposals/:id/finalize", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const proposalId = BigInt(id);
+
+    const service = getContractService();
+
+    // Anyone can call finalize; use a funded account to pay fees
+    const finalizerSecret = getConfig().finalizerSecret;
+    if (!finalizerSecret) {
+      return res.status(500).json({ error: "Finalizer secret key not configured" });
+    }
+
+    const signerKeypair = Keypair.fromSecret(finalizerSecret);
+
+    const result = await service.finalise(signerKeypair, proposalId);
+
+    res.json({ ok: true, hash: result.hash });
+  } catch (err: unknown) {
+    console.error("[POST /proposals/:id/finalize] Error:", err);
+    const message = (err as Error).message ?? "Failed to finalize proposal";
+    if (message.includes("VotingStillOpen")) {
+      res.status(400).json({ error: "Voting period has not ended yet" });
+    } else if (message.includes("ProposalNotActive")) {
+      res.status(400).json({ error: "Proposal is not active" });
+    } else {
+      res.status(500).json({ error: message });
+    }
+  }
+});
+
+// POST /proposals/:id/execute — execute a passed proposal (admin only)
+router.post("/proposals/:id/execute", adminAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const proposalId = BigInt(id);
+
+    const service = getContractService();
+
+    // Admin must sign the execution
+    const adminSecret = getConfig().adminSecret;
+    if (!adminSecret) {
+      return res.status(500).json({ error: "Admin secret key not configured" });
+    }
+
+    const adminKeypair = Keypair.fromSecret(adminSecret);
+    const adminAddress = adminKeypair.publicKey();
+
+    const result = await service.execute(adminKeypair, adminAddress, proposalId);
+
+    res.json({ ok: true, hash: result.hash });
+  } catch (err: unknown) {
+    console.error("[POST /proposals/:id/execute] Error:", err);
+    const message = (err as Error).message ?? "Failed to execute proposal";
+    if (message.includes("ProposalNotPassed")) {
+      res.status(400).json({ error: "Proposal has not passed" });
+    } else if (message.includes("TimelockNotExpired")) {
+      res.status(400).json({ error: "Timelock has not expired" });
+    } else if (message.includes("NotAdmin")) {
+      res.status(403).json({ error: "Caller is not the admin" });
+    } else {
+      res.status(500).json({ error: message });
+    }
+  }
 });
 
 // POST /proposals/invalidate — admin-only; protected by JWT auth middleware
@@ -265,9 +349,22 @@ router.get(
   "/voters/:address/votes",
   validateAddressParam("address"),
   async (req: Request, res: Response) => {
-    const { address } = req.params;
-    // TODO: fetch vote history for voter from indexer
-    res.json({ voter: address, votes: [] });
+    try {
+      const service = getContractService();
+      const { address } = req.params;
+
+      const readAs = getConfig().readAccount;
+      if (!readAs) {
+        return res.status(500).json({ error: "READ_ACCOUNT or SOROBAN_ACCOUNT not configured for contract reads" });
+      }
+
+      // This would require an indexer or iterating through all proposals
+      // For now, return empty array as the contract doesn't have a batch voter query
+      res.json({ voter: address, votes: [] });
+    } catch (err: unknown) {
+      console.error("[GET /voters/:address/votes] Error:", err);
+      res.status(500).json({ error: (err as Error).message ?? "Failed to fetch vote history" });
+    }
   }
 );
 

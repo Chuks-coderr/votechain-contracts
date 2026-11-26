@@ -13,6 +13,13 @@ repository = "https://github.com/Handsoff/contracts"
 [workspace.dependencies]
 soroban-sdk = "21.0.0"
 
+[workspace.metadata.wasm-size-budget]
+# Per-contract WASM size budgets (bytes) for the release build.
+# CI fails if a release build exceeds its contract's budget.
+# Update docs/wasm-size-history when these change.
+governance = 65536
+token = 65536
+
 [profile.release]
 opt-level = "z"
 lto = true

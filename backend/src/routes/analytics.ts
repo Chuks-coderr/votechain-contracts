@@ -14,6 +14,7 @@
 
 import { Router, Request, Response } from "express";
 import { getGovernanceAnalytics } from "../services/analyticsService";
+import { getAnalyticsDb, readBuckets } from "../services/analyticsBucketService";
 import { getRedis } from "../middleware/redisCache";
 import { aggregateIntoBuckets, BucketGranularity } from "../services/analyticsAggregation";
 
@@ -39,26 +40,27 @@ router.get("/governance/analytics", async (_req: Request, res: Response) => {
 });
 
 /**
- * POST /governance/analytics/buckets
+ * GET /analytics?granularity=hour|day&limit=N
  *
- * Returns time-bucketed participation and proposal counts.
- * Query param: granularity=hourly|daily  (default: daily)
- *
- * Accepts a JSON body with a `proposals` array for the input data.
- * In production this would pull from the indexer; here it accepts the data
- * directly so the endpoint is testable without a live DB.
+ * Precomputed, UTC-aligned proposal and vote counts (#524).
  */
-router.post("/governance/analytics/buckets", (req: Request, res: Response) => {
-  const granularity: BucketGranularity =
-    req.query.granularity === "hourly" ? "hourly" : "daily";
-  const proposals = req.body?.proposals;
-
-  if (!Array.isArray(proposals)) {
-    return res.status(400).json({ error: "'proposals' must be an array" });
+router.get("/analytics", async (req: Request, res: Response) => {
+  const granularity = req.query.granularity ?? "day";
+  if (granularity !== "hour" && granularity !== "day") {
+    return res.status(400).json({ error: "granularity must be 'hour' or 'day'" });
   }
-
-  const buckets = aggregateIntoBuckets(proposals, granularity);
-  return res.json({ granularity, buckets });
+  const limit = Number(req.query.limit ?? 30);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+    return res.status(400).json({ error: "limit must be an integer from 1 to 1000" });
+  }
+  const db = getAnalyticsDb();
+  if (!db) return res.status(503).json({ error: "Analytics database not configured" });
+  try {
+    return res.json({ granularity, buckets: await readBuckets(db, granularity, limit) });
+  } catch (error) {
+    console.error("[Analytics] Error reading buckets:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 export default router;

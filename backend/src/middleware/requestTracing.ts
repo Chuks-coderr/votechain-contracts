@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { AsyncLocalStorage } from "async_hooks";
 import { Request, Response, NextFunction } from "express";
+import { getConfig } from "../config";
 
 type RequestContext = { requestId: string };
 
@@ -9,7 +10,7 @@ const levels = ["error", "warn", "info", "debug"] as const;
 type LogLevel = (typeof levels)[number];
 
 function configuredLevel(): LogLevel {
-  const level = process.env.LOG_LEVEL?.toLowerCase();
+  const level = getConfig().logLevel;
   return levels.includes(level as LogLevel) ? (level as LogLevel) : "info";
 }
 
