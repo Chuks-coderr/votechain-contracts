@@ -47,6 +47,7 @@ import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { getConfig } from "../config";
 import { log } from "./requestTracing";
+import { getConfig } from "./config";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

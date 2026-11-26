@@ -71,7 +71,7 @@ const allowedOrigins = env.allowedOrigins;
 const corsOptions: cors.CorsOptions = {
   origin(origin, callback) {
     // Allow requests with no origin (curl, server-to-server, health checks)
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (!origin || config.ALLOWED_ORIGINS.includes(origin)) {
       callback(null, true);
     } else {
       callback(new Error(`CORS: origin '${origin}' not allowed`));
@@ -143,6 +143,8 @@ app.use("/", healthRoutes);
 app.use("/api", requestTimeout());
 app.use("/api", apiKeyAuth);
 app.use("/api", rateLimit);
+app.use("/api", requestTimeout);
+app.use("/api", compression);
 
 // ── Routes ─────────────────────────────────────────────────────────────────
 app.use("/api", proposalRoutes);
@@ -246,8 +248,8 @@ function registerGracefulShutdown(server: http.Server): void {
 connectRedis(env.redisUrl).then(() => {
   const server = http.createServer(app);
   registerGracefulShutdown(server);
-  server.listen(PORT, () =>
-    console.log(`[server] listening on :${PORT}`)
+  server.listen(config.PORT, () =>
+    console.log(`[server] listening on :${config.PORT}`)
   );
   startBucketRefresh();
 });
